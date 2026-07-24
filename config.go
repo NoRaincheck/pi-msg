@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // roomList is the set of MUC JIDs from the "room" config field. It accepts
@@ -72,6 +73,11 @@ type Account struct {
 	// transfer. Optional; if unset the bridge probes "upload.<domain>" and
 	// "httpupload.<domain>".
 	UploadService string `json:"uploadService,omitempty"`
+	// PingInterval is how often to send an XEP-0199 keepalive ping to the
+	// server (and, in room mode, an XEP-0410 self-ping to each joined room) to
+	// detect silent disconnects. A Go duration string ("60s", "2m"). Defaults
+	// to "60s"; "0" disables keepalive.
+	PingInterval string `json:"pingInterval,omitempty"`
 }
 
 // Config is the on-disk config: an arbitrary number of named accounts.
@@ -96,6 +102,7 @@ type ResolvedAccount struct {
 	Nick          string
 	RoomTrigger   string
 	UploadService string
+	PingInterval  time.Duration
 }
 
 // RoomMode reports whether this account operates in MUC (group-chat) mode.
@@ -104,6 +111,8 @@ func (a ResolvedAccount) RoomMode() bool { return len(a.Rooms) > 0 }
 const (
 	defaultAccount  = "default"
 	defaultResource = "pi-msg"
+	// defaultPingInterval is the keepalive cadence when pingInterval is unset.
+	defaultPingInterval = 60 * time.Second
 )
 
 // configPath returns the config file path: $PI_MSG_CONFIG or
@@ -224,6 +233,14 @@ func resolveAccount(cfg *Config, requested string) (ResolvedAccount, error) {
 	if resource == "" {
 		resource = defaultResource
 	}
+	pingInterval := defaultPingInterval
+	if s := strings.TrimSpace(acct.PingInterval); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return ResolvedAccount{}, fmt.Errorf("pi-msg: account %q has invalid pingInterval %q: %w", name, s, err)
+		}
+		pingInterval = d
+	}
 
 	return ResolvedAccount{
 		Name:          name,
@@ -239,6 +256,7 @@ func resolveAccount(cfg *Config, requested string) (ResolvedAccount, error) {
 		Nick:          nick,
 		RoomTrigger:   trigger,
 		UploadService: strings.TrimSpace(acct.UploadService),
+		PingInterval:  pingInterval,
 	}, nil
 }
 

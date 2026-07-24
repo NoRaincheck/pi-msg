@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, cfg Config) string {
@@ -68,6 +69,42 @@ func TestResolveAccountRoomMode(t *testing.T) {
 	}
 	if got.RoomTrigger != "botpi" {
 		t.Errorf("RoomTrigger defaults to Nick: got %q, want botpi", got.RoomTrigger)
+	}
+}
+
+func TestResolveAccountPingInterval(t *testing.T) {
+	base := func(pi string) *Config {
+		return &Config{Accounts: map[string]Account{
+			"default": {JID: "a@x.com", Password: "p", Owner: "o@x.com", PingInterval: pi},
+		}}
+	}
+	// Unset → default cadence.
+	got, err := resolveAccount(base(""), "")
+	if err != nil {
+		t.Fatalf("resolveAccount: %v", err)
+	}
+	if got.PingInterval != defaultPingInterval {
+		t.Errorf("default PingInterval = %s, want %s", got.PingInterval, defaultPingInterval)
+	}
+	// Explicit duration string is parsed.
+	got, err = resolveAccount(base("2m"), "")
+	if err != nil {
+		t.Fatalf("resolveAccount: %v", err)
+	}
+	if got.PingInterval != 2*time.Minute {
+		t.Errorf("PingInterval = %s, want 2m", got.PingInterval)
+	}
+	// "0" disables keepalive.
+	got, err = resolveAccount(base("0"), "")
+	if err != nil {
+		t.Fatalf("resolveAccount: %v", err)
+	}
+	if got.PingInterval != 0 {
+		t.Errorf("PingInterval = %s, want 0", got.PingInterval)
+	}
+	// Garbage is a config error.
+	if _, err := resolveAccount(base("soon"), ""); err == nil {
+		t.Error("expected error for invalid pingInterval, got nil")
 	}
 }
 

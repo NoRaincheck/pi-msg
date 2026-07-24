@@ -85,6 +85,7 @@ Per-account fields:
 | `nick` | no | JID localpart | occupant nickname used in the room(s) |
 | `roomTrigger` | no | `nick` | address prefix that makes a room message a prompt (e.g. `pi` → `pi: …`) |
 | `uploadService` | no | auto-probed | XEP-0363 upload component JID for file transfer (e.g. `upload.chat.example.com`) |
+| `pingInterval` | no | `60s` | keepalive cadence (Go duration): XEP-0199 server ping + XEP-0410 MUC self-ping; `0` disables |
 
 Multiple accounts: add more keys under `accounts`; `default` is used unless you set
 `PI_MSG_ACCOUNT=<name>`. In 1:1 mode only the `owner` JID may drive the agent.

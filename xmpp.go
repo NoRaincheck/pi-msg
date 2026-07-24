@@ -22,6 +22,7 @@ import (
 	"mellium.im/xmpp"
 	"mellium.im/xmpp/disco"
 	"mellium.im/xmpp/jid"
+	"mellium.im/xmpp/ping"
 	"mellium.im/xmpp/stanza"
 	"mellium.im/xmpp/upload"
 )
@@ -212,6 +213,13 @@ func (b *XMPPBridge) serve(ctx context.Context, onConnected func()) error {
 		onConnected()
 	}
 
+	// Keepalive: XEP-0199 server pings (and XEP-0410 MUC self-pings) surface a
+	// silently-dropped connection or a silent MUC eviction. It runs until the
+	// read loop below returns, at which point keepaliveCtx is canceled.
+	keepaliveCtx, stopKeepalive := context.WithCancel(ctx)
+	defer stopKeepalive()
+	go b.keepalive(keepaliveCtx, session)
+
 	serveErr := session.Serve(xmpp.HandlerFunc(b.handle))
 	b.setOffline()
 	if ctx.Err() != nil {
@@ -228,6 +236,72 @@ func (b *XMPPBridge) setOffline() {
 	b.online = false
 	b.session = nil
 	b.mu.Unlock()
+}
+
+// pingTimeout bounds each keepalive ping's round trip.
+const pingTimeout = 15 * time.Second
+
+// keepalive periodically pings the server (XEP-0199) to detect a
+// silently-dropped connection, and in room mode self-pings each joined room
+// (XEP-0410) to detect a silent eviction. A failed server ping tears the
+// session down so Run reconnects; a failed self-ping re-joins just that room.
+// It returns when ctx is canceled (the read loop ended) or the interval is
+// non-positive (keepalive disabled).
+func (b *XMPPBridge) keepalive(ctx context.Context, session *xmpp.Session) {
+	if b.acct.PingInterval <= 0 {
+		return // disabled
+	}
+	server, err := jid.Parse(domainOf(b.acct.JID))
+	if err != nil {
+		b.log("warning", "keepalive disabled: bad server jid: "+err.Error())
+		return
+	}
+	ticker := time.NewTicker(b.acct.PingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if err := b.pingOnce(ctx, session, server); err != nil {
+			b.log("warning", "keepalive ping failed; forcing reconnect: "+err.Error())
+			// Closing unblocks session.Serve, so serve() returns and Run
+			// reconnects. serve()'s deferred Close makes the double-close a
+			// harmless no-op.
+			session.Close()
+			return
+		}
+		for _, room := range b.acct.Rooms {
+			b.selfPing(ctx, session, room)
+		}
+	}
+}
+
+// pingOnce sends a single XEP-0199 ping to `to` bounded by pingTimeout.
+func (b *XMPPBridge) pingOnce(ctx context.Context, session *xmpp.Session, to jid.JID) error {
+	pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+	defer cancel()
+	return ping.Send(pingCtx, session, to)
+}
+
+// selfPing performs an XEP-0410 MUC self-ping to confirm we're still joined to
+// room; on error it re-joins. ping.Send treats a service-unavailable reply as
+// success (we exist at the occupant JID but don't answer pings), which is
+// exactly the "still joined" signal — any other error means we've been
+// desynced/ejected.
+func (b *XMPPBridge) selfPing(ctx context.Context, session *xmpp.Session, room string) {
+	roomBare := bareJid(room)
+	occupant, err := jid.Parse(roomBare + "/" + b.ownNick(roomBare))
+	if err != nil {
+		return
+	}
+	if err := b.pingOnce(ctx, session, occupant); err != nil {
+		b.log("warning", fmt.Sprintf("self-ping to %s failed; re-joining: %v", roomBare, err))
+		if err := b.joinRoom(room); err != nil {
+			b.log("warning", fmt.Sprintf("re-join %s failed: %v", roomBare, err))
+		}
+	}
 }
 
 // connect dials and negotiates a client session for the account.
@@ -306,11 +380,45 @@ func (b *XMPPBridge) handle(t xmlstream.TokenReadEncoder, start *xml.StartElemen
 			return err
 		}
 		return b.handlePresence(start, toks)
+	case "iq":
+		toks, err := xmlstream.ReadAll(t)
+		if err != nil {
+			return err
+		}
+		// Answer XEP-0199 ping requests so a server/peer keepalive sees us as
+		// alive. (Responses to our own pings are correlated by the session
+		// before reaching this handler, so they never arrive here.)
+		if attr(start.Attr, "type") == "get" {
+			if _, ok := element(toks, ping.NS, "ping"); ok {
+				return b.encodePong(attr(start.Attr, "from"), attr(start.Attr, "id"))
+			}
+		}
+		return nil
 	default:
-		// IQ, etc.: drain so the stream advances.
+		// Anything else: drain so the stream advances.
 		_, err := xmlstream.Copy(xmlstream.Discard(), t)
 		return err
 	}
+}
+
+// encodePong replies to an XEP-0199 ping with an empty result IQ echoing the
+// request id back to its sender.
+func (b *XMPPBridge) encodePong(to, id string) error {
+	session := b.currentSession()
+	if session == nil {
+		return fmt.Errorf("not online")
+	}
+	resp := stanza.IQ{ID: id, Type: stanza.ResultIQ}
+	if to != "" {
+		toJID, err := jid.Parse(to)
+		if err != nil {
+			return fmt.Errorf("invalid ping sender %q: %w", to, err)
+		}
+		resp.To = toJID
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+	return session.Encode(ctx, resp)
 }
 
 // dispatch applies delivery policy and forwards a message to onMsg. Routing is
