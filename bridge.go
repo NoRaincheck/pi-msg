@@ -35,6 +35,7 @@ type Bridge struct {
 	routingNudges  int    // mis-routed-reply corrections sent this user turn (bounded)
 	reactTo        string // full JID of the owner message the current run reacts to
 	reactID        string // stanza id of that message (XEP-0444 target); "" disables
+	turnDest       string // reply destination for the current turn (owner or room jid)
 
 	typingMu   sync.Mutex
 	typingStop chan struct{}
@@ -69,11 +70,27 @@ func (b *Bridge) Run(ctx context.Context) error {
 	b.ctx = ctx
 
 	b.xmpp = NewXMPPBridge(b.acct, b.onInbound, b.log)
-	b.rpc = NewRPCClient("", b.acct.Model, b.acct.Workdir, func(line string) {
+
+	// Materialise the companion extension so pi can register the XMPP tools.
+	extPath, err := writeTempExtension()
+	if err != nil {
+		return err
+	}
+	defer os.Remove(extPath)
+
+	b.rpc = NewRPCClient("", b.acct.Model, b.acct.Workdir, extPath, func(line string) {
 		if b.debug {
 			b.log("info", "pi stderr: "+line)
 		}
 	})
+	// Tell the companion extension which tools to register. send_file is always
+	// available; send_reaction only when the account opts into reactions (it
+	// mirrors the same opt-in gate as the in-band lifecycle reactions).
+	tools := []string{"file"}
+	if b.acct.Reactions {
+		tools = append(tools, "reaction")
+	}
+	b.rpc.env = []string{"PI_MSG_TOOLS=" + strings.Join(tools, ",")}
 
 	// Bring up XMPP first so we can report problems, then start pi.
 	go b.xmpp.Run(ctx, b.onConnected)
@@ -198,13 +215,22 @@ func (b *Bridge) handleRPCEvent(ev Event) {
 	}
 }
 
-// handleUIRequest cancels interactive dialogs (nobody is at the TUI to answer
-// them) so pi doesn't block.
+// handleUIRequest routes companion-extension tool-action relays and otherwise
+// cancels interactive dialogs (nobody is at the TUI to answer them) so pi
+// doesn't block. A `confirm` whose title carries the sentinel is a relayed tool
+// action, not a real user dialog — see handleToolRelay.
 func (b *Bridge) handleUIRequest(ev Event) {
+	id := ev.Str("id")
 	method := ev.Str("method")
+	if method == "confirm" {
+		if payload, ok := strings.CutPrefix(ev.Str("title"), relayPrefix); ok {
+			b.handleToolRelay(id, payload)
+			return
+		}
+	}
 	switch method {
 	case "select", "confirm", "input", "editor":
-		if id := ev.Str("id"); id != "" {
+		if id != "" {
 			b.rpc.CancelUI(id)
 			b.reply(fmt.Sprintf("⚠️ pi asked for input (%s) — auto-dismissed (no interactive UI over chat).", method))
 		}
@@ -214,6 +240,64 @@ func (b *Bridge) handleUIRequest(ev Event) {
 				b.reply("ℹ️ " + m)
 			}
 		}
+	}
+}
+
+// handleToolRelay performs an XMPP-side action requested by an agent tool call
+// in the companion extension, then answers the blocking confirm so the tool
+// (and thus the LLM) learns whether it succeeded. The JSON payload names the
+// action and its arguments. This is the structured alternative to the in-band
+// `react:` / `file:` text conventions (issue #8 spike).
+func (b *Bridge) handleToolRelay(id, payload string) {
+	var cmd struct {
+		Action string `json:"action"`
+		Emoji  string `json:"emoji"`
+		Path   string `json:"path"`
+		To     string `json:"to"`
+	}
+	if err := json.Unmarshal([]byte(payload), &cmd); err != nil {
+		b.log("warning", "bad tool-relay payload: "+err.Error())
+		b.rpc.RespondUI(id, false)
+		return
+	}
+	switch cmd.Action {
+	case "react":
+		b.mu.Lock()
+		to, rid := b.reactTo, b.reactID
+		b.mu.Unlock()
+		b.log("info", fmt.Sprintf("tool-relay react: emoji=%q target to=%q id=%q", cmd.Emoji, to, rid))
+		b.sendReaction(cmd.Emoji)
+		// Success iff there was a message to react to; reactions are instant.
+		b.rpc.RespondUI(id, to != "" && rid != "")
+	case "file":
+		dest := cmd.To
+		if dest == "" {
+			// Default to where this turn's reply would go (room in room mode,
+			// owner in 1:1); fall back to the owner if no turn context yet.
+			if dest = b.currentTurnDest(); dest == "" {
+				dest = b.acct.Owner
+			}
+		}
+		b.log("info", fmt.Sprintf("tool-relay file: path=%q dest=%q", cmd.Path, dest))
+		// Same allowlist as the in-band file: path — the agent can't ship files
+		// to arbitrary JIDs.
+		if b.xmpp.classifyDest(dest) == destBlocked {
+			b.reply(fmt.Sprintf("⚠️ send_file: %q is not an allowed destination", dest))
+			b.rpc.RespondUI(id, false)
+			return
+		}
+		// The XEP-0363 upload is a network round-trip (up to ~2min); run it off
+		// the RPC event loop and answer the blocked tool when it settles.
+		go func() {
+			err := b.xmpp.SendFile(dest, cmd.Path)
+			if err != nil {
+				b.reply(fmt.Sprintf("⚠️ send_file %q → %s failed: %v", cmd.Path, dest, err))
+			}
+			b.rpc.RespondUI(id, err == nil)
+		}()
+	default:
+		b.log("warning", "unknown tool-relay action: "+cmd.Action)
+		b.rpc.RespondUI(id, false)
 	}
 }
 
@@ -288,8 +372,10 @@ func (b *Bridge) handleCanonical(text, origin, sender, reactTo, reactID string) 
 	if strings.HasPrefix(t, "/") && b.handleCommand(t) {
 		return
 	}
-	// A real prompt: point lifecycle/agent reactions at the message that drove it.
+	// A real prompt: point lifecycle/agent reactions at the message that drove it,
+	// and remember where a reply (or tool-driven file) should go by default.
 	b.setReactTarget(reactTo, reactID)
+	b.setTurnDest(origin)
 	b.rpc.Prompt(b.composePrompt(t, true, "", origin, sender), b.steerBehavior())
 	// Immediate "got it, working" ack; agent_start confirms it shortly (deduped).
 	// Typing is no longer lit here — it now tracks literal text streaming.
@@ -305,6 +391,7 @@ func (b *Bridge) dispatchCommentary(body, nick, origin, sender string) {
 		return
 	}
 	b.setReactTarget("", "") // room turn: no 1:1 reaction target
+	b.setTurnDest(origin)
 	b.rpc.Prompt(b.composePrompt(t, false, nick, origin, sender), b.steerBehavior())
 	b.xmpp.SetPresence("dnd", "thinking…")
 }
@@ -928,6 +1015,21 @@ func (b *Bridge) setReactTarget(to, id string) {
 	b.mu.Lock()
 	b.reactTo, b.reactID = to, id
 	b.mu.Unlock()
+}
+
+// setTurnDest records the reply destination for the current turn (the owner in
+// 1:1, or the room in room mode), used as the default target for a tool-driven
+// file send when the agent doesn't name one.
+func (b *Bridge) setTurnDest(dest string) {
+	b.mu.Lock()
+	b.turnDest = dest
+	b.mu.Unlock()
+}
+
+func (b *Bridge) currentTurnDest() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.turnDest
 }
 
 // sendReaction sends a XEP-0444 reaction (emoji set) to the current run's

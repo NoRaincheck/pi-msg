@@ -31,7 +31,7 @@ done
 }
 
 func TestRPCEventsAndRequest(t *testing.T) {
-	c := NewRPCClient(fakePi(t), "", "", nil)
+	c := NewRPCClient(fakePi(t), "", "", "", nil)
 	if err := c.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestRPCEventsAndRequest(t *testing.T) {
 }
 
 func TestRPCStopClosesDone(t *testing.T) {
-	c := NewRPCClient(fakePi(t), "", "", nil)
+	c := NewRPCClient(fakePi(t), "", "", "", nil)
 	if err := c.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestRPCStopClosesDone(t *testing.T) {
 }
 
 func TestRequestAfterExitFails(t *testing.T) {
-	c := NewRPCClient(fakePi(t), "", "", nil)
+	c := NewRPCClient(fakePi(t), "", "", "", nil)
 	if err := c.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}

@@ -54,10 +54,12 @@ const maxRPCLine = 8 << 20 // 8 MiB
 // writes one JSON command per line to stdin, and correlates request/response
 // pairs by a generated id. Non-response events are delivered on Events().
 type RPCClient struct {
-	bin    string
-	model  string
-	cwd    string
-	stderr func(string) // optional per-line stderr sink
+	bin     string
+	model   string
+	cwd     string
+	extPath string       // optional companion extension to load via `-e`
+	env     []string     // extra environment ("KEY=value") for the pi process
+	stderr  func(string) // optional per-line stderr sink
 
 	events chan Event
 	done   chan struct{} // closed once pi exits
@@ -72,8 +74,9 @@ type RPCClient struct {
 	exitErr error
 }
 
-// NewRPCClient constructs a client. bin defaults to "pi" when empty.
-func NewRPCClient(bin, model, cwd string, stderr func(string)) *RPCClient {
+// NewRPCClient constructs a client. bin defaults to "pi" when empty. extPath,
+// when non-empty, is a Pi extension file loaded via `-e`.
+func NewRPCClient(bin, model, cwd, extPath string, stderr func(string)) *RPCClient {
 	if bin == "" {
 		bin = "pi"
 	}
@@ -81,6 +84,7 @@ func NewRPCClient(bin, model, cwd string, stderr func(string)) *RPCClient {
 		bin:     bin,
 		model:   model,
 		cwd:     cwd,
+		extPath: extPath,
 		stderr:  stderr,
 		events:  make(chan Event, 64),
 		done:    make(chan struct{}),
@@ -110,9 +114,12 @@ func (c *RPCClient) Start() error {
 	if c.model != "" {
 		args = append(args, "--model", c.model)
 	}
+	if c.extPath != "" {
+		args = append(args, "-e", c.extPath)
+	}
 	cmd := exec.Command(c.bin, args...)
 	cmd.Dir = c.cwd
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), c.env...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -325,6 +332,12 @@ func (c *RPCClient) Abort() { c.Send(map[string]any{"type": "abort"}) }
 // CancelUI declines a pi UI request dialog (nobody is at the TUI to answer).
 func (c *RPCClient) CancelUI(id string) {
 	c.Send(map[string]any{"type": "extension_ui_response", "id": id, "cancelled": true})
+}
+
+// RespondUI answers a confirm-style extension_ui_request with a boolean result.
+// Used to complete the companion extension's tool-action relay.
+func (c *RPCClient) RespondUI(id string, confirmed bool) {
+	c.Send(map[string]any{"type": "extension_ui_response", "id": id, "confirmed": confirmed})
 }
 
 // Stop signals intentional shutdown and terminates the pi process.
