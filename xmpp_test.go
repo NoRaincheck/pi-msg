@@ -37,7 +37,8 @@ func TestChunkShort(t *testing.T) {
 
 func TestChunkSplitsAndPreserves(t *testing.T) {
 	// Build text well over the cap with spaces so it splits on word bounds.
-	long := strings.Repeat("word ", 2000) // ~10000 bytes
+	// Sized relative to maxBody so this holds regardless of the cap's value.
+	long := strings.Repeat("word ", maxBody/5*2) // ~2x the cap
 	parts := chunk(long, maxBody)
 	if len(parts) < 2 {
 		t.Fatalf("expected multiple chunks, got %d", len(parts))
