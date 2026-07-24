@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
@@ -134,6 +136,12 @@ type XMPPBridge struct {
 
 	uploadMu  sync.Mutex
 	uploadSvc string // resolved XEP-0363 upload component JID (cached)
+
+	// XEP-0153 vCard avatar, loaded once from acct.Avatar. Empty when no avatar
+	// is configured or the file couldn't be read.
+	avatarType string // image MIME type, e.g. "image/png"
+	avatarB64  string // base64 of the raw image bytes (vCard <BINVAL>)
+	avatarHash string // lowercase hex SHA-1 of the raw bytes (presence photo hash)
 }
 
 // NewXMPPBridge constructs a bridge. onMsg is called for each message that
@@ -143,7 +151,7 @@ func NewXMPPBridge(acct ResolvedAccount, onMsg func(InboundMessage), logf func(l
 	for _, room := range acct.Rooms {
 		roomBares[bareJid(room)] = true
 	}
-	return &XMPPBridge{
+	b := &XMPPBridge{
 		acct:      acct,
 		ownerBare: bareJid(acct.Owner),
 		roomBares: roomBares,
@@ -154,6 +162,39 @@ func NewXMPPBridge(acct ResolvedAccount, onMsg func(InboundMessage), logf func(l
 		occupants: make(map[string]map[string]string),
 		selfNick:  make(map[string]string),
 	}
+	b.loadAvatar()
+	return b
+}
+
+// loadAvatar reads the configured XEP-0153 avatar image and precomputes the
+// vCard payload (base64 + MIME type) and the presence photo hash (SHA-1). A
+// missing path or unreadable file is a logged warning, not fatal — the bridge
+// just runs without an avatar.
+func (b *XMPPBridge) loadAvatar() {
+	if b.acct.Avatar == "" {
+		return
+	}
+	data, err := os.ReadFile(b.acct.Avatar)
+	if err != nil {
+		b.log("warning", "avatar not loaded: "+err.Error())
+		return
+	}
+	if len(data) == 0 {
+		b.log("warning", "avatar not loaded: file is empty: "+b.acct.Avatar)
+		return
+	}
+	ctype := mime.TypeByExtension(filepath.Ext(b.acct.Avatar))
+	if ctype == "" {
+		ctype = http.DetectContentType(data)
+	}
+	if i := strings.IndexByte(ctype, ';'); i >= 0 { // drop any "; charset=…"
+		ctype = strings.TrimSpace(ctype[:i])
+	}
+	sum := sha1.Sum(data)
+	b.avatarType = ctype
+	b.avatarB64 = base64.StdEncoding.EncodeToString(data)
+	b.avatarHash = hex.EncodeToString(sum[:])
+	b.log("info", fmt.Sprintf("avatar loaded (%s, %d bytes, sha1 %s)", ctype, len(data), b.avatarHash))
 }
 
 func (b *XMPPBridge) log(level, msg string) {
@@ -225,6 +266,19 @@ func (b *XMPPBridge) serve(ctx context.Context, onConnected func()) error {
 	keepaliveCtx, stopKeepalive := context.WithCancel(ctx)
 	defer stopKeepalive()
 	go b.keepalive(keepaliveCtx, session)
+
+	// Publish the vCard avatar (XEP-0153) once the read loop below is up to
+	// route the IQ result. The presence broadcast above already carried the
+	// photo hash, so clients will fetch the vCard as soon as it lands.
+	if b.avatarB64 != "" {
+		go func() {
+			if err := b.publishAvatar(); err != nil {
+				b.log("warning", "avatar vCard publish failed: "+err.Error())
+			} else {
+				b.log("info", "avatar vCard published")
+			}
+		}()
+	}
 
 	serveErr := session.Serve(xmpp.HandlerFunc(b.handle))
 	b.setOffline()
@@ -847,8 +901,27 @@ func (b *XMPPBridge) encodeReaction(to, forID string, emojis []string) error {
 	return session.Encode(ctx, msg)
 }
 
-// encodePresence announces presence with an optional show and status. An empty
-// "to" broadcasts (roster-wide) presence.
+// vcardXUpdate is the XEP-0153 <x xmlns='vcard-temp:x:update'> presence child
+// that advertises the SHA-1 hash of the account's vCard avatar, so clients know
+// to (re)fetch it.
+type vcardXUpdate struct {
+	XMLName xml.Name `xml:"vcard-temp:x:update x"`
+	Photo   string   `xml:"photo"`
+}
+
+// avatarUpdate returns the vcard-temp:x:update element to attach to a presence
+// stanza, or nil when no avatar is configured. As a pointer it is omitted from
+// the marshaled presence entirely when nil.
+func (b *XMPPBridge) avatarUpdate() *vcardXUpdate {
+	if b.avatarHash == "" {
+		return nil
+	}
+	return &vcardXUpdate{Photo: b.avatarHash}
+}
+
+// encodePresence announces presence with an optional show and status, carrying
+// the XEP-0153 avatar hash when one is configured. An empty "to" broadcasts
+// (roster-wide) presence.
 func (b *XMPPBridge) encodePresence(show, status string) error {
 	session := b.currentSession()
 	if session == nil {
@@ -858,7 +931,8 @@ func (b *XMPPBridge) encodePresence(show, status string) error {
 		XMLName xml.Name `xml:"presence"`
 		Show    string   `xml:"show,omitempty"`
 		Status  string   `xml:"status,omitempty"`
-	}{Show: show, Status: status}
+		VCard   *vcardXUpdate
+	}{Show: show, Status: status, VCard: b.avatarUpdate()}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return session.Encode(ctx, p)
@@ -878,6 +952,40 @@ func (b *XMPPBridge) encodeUnavailable() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return session.Encode(ctx, p)
+}
+
+// publishAvatar stores the configured image in the account's vCard via an
+// XEP-0153 IQ-set (vcard-temp <PHOTO>). No-op when no avatar is configured.
+// Must run while the read loop (Serve) is active, since EncodeIQ blocks on the
+// IQ result — so the bridge calls it from a goroutine.
+func (b *XMPPBridge) publishAvatar() error {
+	if b.avatarB64 == "" {
+		return nil
+	}
+	session := b.currentSession()
+	if session == nil {
+		return fmt.Errorf("not online")
+	}
+	iq := struct {
+		stanza.IQ
+		VCard struct {
+			XMLName xml.Name `xml:"vcard-temp vCard"`
+			Photo   struct {
+				XMLName xml.Name `xml:"PHOTO"`
+				Type    string   `xml:"TYPE"`
+				BinVal  string   `xml:"BINVAL"`
+			}
+		}
+	}{IQ: stanza.IQ{Type: stanza.SetIQ}}
+	iq.VCard.Photo.Type = b.avatarType
+	iq.VCard.Photo.BinVal = b.avatarB64
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := session.EncodeIQ(ctx, iq)
+	if err != nil {
+		return err
+	}
+	return resp.Close()
 }
 
 // SendRoomTo posts a groupchat message to a room JID, splitting long text.
@@ -1054,7 +1162,8 @@ func (b *XMPPBridge) joinRoom(room string) error {
 				MaxStanzas int      `xml:"maxstanzas,attr"`
 			} `xml:"history"`
 		} `xml:"x"`
-	}{To: occupant, Status: b.presence}
+		VCard *vcardXUpdate // XEP-0153 avatar hash, so it shows in the room roster
+	}{To: occupant, Status: b.presence, VCard: b.avatarUpdate()}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return session.Encode(ctx, join)

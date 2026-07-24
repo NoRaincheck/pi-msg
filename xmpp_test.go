@@ -1,7 +1,12 @@
 package main
 
 import (
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/xml"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -176,5 +181,61 @@ func TestReactionsMarshalEmptyClears(t *testing.T) {
 	}
 	if !strings.Contains(got, `id="m1"`) || !strings.Contains(got, "reactions") {
 		t.Errorf("empty reactions still needs the reactions element + id, got %q", got)
+	}
+}
+
+func TestLoadAvatar(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "avatar.png")
+	data := []byte("not-really-a-png-but-bytes-are-bytes")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := NewXMPPBridge(ResolvedAccount{Owner: "o@x.com", Avatar: path}, func(InboundMessage) {}, nil)
+	if b.avatarType != "image/png" {
+		t.Errorf("avatarType = %q, want image/png", b.avatarType)
+	}
+	sum := sha1.Sum(data)
+	if want := hex.EncodeToString(sum[:]); b.avatarHash != want {
+		t.Errorf("avatarHash = %q, want %q", b.avatarHash, want)
+	}
+	if want := base64.StdEncoding.EncodeToString(data); b.avatarB64 != want {
+		t.Errorf("avatarB64 = %q, want %q", b.avatarB64, want)
+	}
+	if u := b.avatarUpdate(); u == nil || u.Photo != b.avatarHash {
+		t.Errorf("avatarUpdate = %+v, want photo %q", u, b.avatarHash)
+	}
+}
+
+func TestLoadAvatarMissingIsNonFatal(t *testing.T) {
+	b := NewXMPPBridge(
+		ResolvedAccount{Owner: "o@x.com", Avatar: "/no/such/file.png"},
+		func(InboundMessage) {}, nil,
+	)
+	if b.avatarHash != "" || b.avatarB64 != "" || b.avatarType != "" {
+		t.Errorf("missing avatar file should leave avatar fields empty")
+	}
+	if b.avatarUpdate() != nil {
+		t.Errorf("avatarUpdate should be nil with no avatar")
+	}
+}
+
+func TestLoadAvatarNoneConfigured(t *testing.T) {
+	b := NewXMPPBridge(ResolvedAccount{Owner: "o@x.com"}, func(InboundMessage) {}, nil)
+	if b.avatarUpdate() != nil {
+		t.Errorf("no avatar configured → avatarUpdate should be nil")
+	}
+}
+
+func TestVCardXUpdateMarshal(t *testing.T) {
+	out, err := xml.Marshal(&vcardXUpdate{Photo: "abc123"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(out)
+	for _, want := range []string{`xmlns="vcard-temp:x:update"`, "<photo>abc123</photo>"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("vcard x:update = %q, missing %q", got, want)
+		}
 	}
 }

@@ -83,6 +83,10 @@ type Account struct {
 	// detect silent disconnects. A Go duration string ("60s", "2m"). Defaults
 	// to "60s"; "0" disables keepalive.
 	PingInterval string `json:"pingInterval,omitempty"`
+	// Avatar is a path to a local image (PNG/JPEG/GIF) published as the bot's
+	// XEP-0153 vCard avatar on connect. Optional; a missing/invalid file is a
+	// logged warning, not fatal.
+	Avatar string `json:"avatar,omitempty"`
 }
 
 // Config is the on-disk config: an arbitrary number of named accounts.
@@ -109,6 +113,7 @@ type ResolvedAccount struct {
 	RoomTrigger   string
 	UploadService string
 	PingInterval  time.Duration
+	Avatar        string
 }
 
 // RoomMode reports whether this account operates in MUC (group-chat) mode.
@@ -264,6 +269,7 @@ func resolveAccount(cfg *Config, requested string) (ResolvedAccount, error) {
 		RoomTrigger:   trigger,
 		UploadService: strings.TrimSpace(acct.UploadService),
 		PingInterval:  pingInterval,
+		Avatar:        strings.TrimSpace(acct.Avatar),
 	}, nil
 }
 
