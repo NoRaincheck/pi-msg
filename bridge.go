@@ -574,7 +574,7 @@ func contentText(content any) string {
 // routingHint tells the agent, when the account has room access, that every
 // reply must begin with an explicit "to: <jid>" line, and how to choose it.
 func (b *Bridge) routingHint() string {
-	return fmt.Sprintf("[routing: you have group-chat access, so EVERY reply MUST begin with a line \"to: <jid>\" naming the destination. To reply where this message came from, use the \"from:\" jid above; to DM the person who sent it, use their \"sender:\" jid (if shown); to reach your owner, use to: %s. You may include several \"to: <jid>\" blocks in one reply to send different parts to different destinations — each \"to:\" line starts a new message. To attach a file, add a line \"file: <absolute path>\" inside a \"to:\" block. Any text with no valid \"to:\" line is sent to the owner.]", b.acct.Owner)
+	return fmt.Sprintf("[routing: you have group-chat access, so EVERY reply MUST begin with a line \"to: <jid>\" naming the destination. To reply where this message came from, use the \"from:\" jid above; to DM the person who sent it, use their \"sender:\" jid (if shown); to reach your owner, use to: %s. You may include several \"to: <jid>\" blocks in one reply to send different parts to different destinations — each \"to:\" line starts a new message. Any text with no valid \"to:\" line is sent to the owner.]", b.acct.Owner)
 }
 
 // composePrompt assembles the text sent to pi. When the account has room
@@ -603,17 +603,12 @@ func (b *Bridge) composePrompt(body string, canonical bool, nick, origin, sender
 	if b.acct.RoomMode() {
 		sb.WriteString("\n\n")
 		sb.WriteString(b.routingHint())
-	} else if b.acct.Reactions {
-		// 1:1 with reactions on: offer the agent a low-noise ack channel.
-		sb.WriteString("\n\n")
-		sb.WriteString(reactionHint)
 	}
+	// Reactions and file sends are exposed as structured tools (send_reaction /
+	// send_file) by the companion extension, not as in-band text directives, so
+	// no prompt hint is injected for them here.
 	return sb.String()
 }
-
-// reactionHint tells the agent, in 1:1 mode with reactions enabled, that it may
-// react to the owner's message with emoji instead of (or before) a text reply.
-const reactionHint = "[reactions: to acknowledge this message with an emoji instead of prose, include a line \"react: <emoji>\" in your reply (e.g. \"react: 👀\" for seen, \"react: ✅\" for done). The emoji attaches to the message above as a reaction; any other text is sent normally. Use this for lightweight acks; use a normal reply when you have something to say.]"
 
 // matchTrigger reports whether body addresses the bot by its room trigger
 // (e.g. "pi:" / "pi,") and returns the remaining text with the prefix removed.
@@ -683,16 +678,8 @@ func (b *Bridge) reply(text string) {
 // agent is nudged to resend correctly.
 func (b *Bridge) deliverReply(text string) {
 	if !b.acct.RoomMode() {
-		// Agent-driven reactions (1:1): pull any "react: <emoji>" directive lines
-		// out of the reply, apply them to the message we're answering, and send
-		// the remainder as normal text. Gated by the reactions flag (same switch
-		// as the lifecycle reactions), so it's fully off when the owner opts out.
-		if b.acct.Reactions {
-			if emojis, rest := extractReactions(text); len(emojis) > 0 {
-				b.sendReaction(emojis...)
-				text = rest
-			}
-		}
+		// Deliberate reactions are the send_reaction tool's job now; a 1:1 reply
+		// is just its text.
 		if strings.TrimSpace(text) != "" {
 			b.xmpp.Send(text)
 		}
@@ -711,11 +698,7 @@ func (b *Bridge) deliverReply(text string) {
 	for _, s := range segs {
 		kind := b.xmpp.classifyDest(s.dest)
 		if kind == destBlocked {
-			note := s.body
-			if note == "" {
-				note = fmt.Sprintf("(a file attachment: %s)", strings.Join(s.files, ", "))
-			}
-			b.rejectReply(note, fmt.Sprintf("%q is not an allowed destination", s.dest))
+			b.rejectReply(s.body, fmt.Sprintf("%q is not an allowed destination", s.dest))
 			continue
 		}
 		if s.body != "" {
@@ -723,11 +706,6 @@ func (b *Bridge) deliverReply(text string) {
 				b.xmpp.SendRoomTo(bareJid(s.dest), s.body)
 			} else {
 				b.xmpp.SendChatTo(s.dest, s.body)
-			}
-		}
-		for _, path := range s.files {
-			if err := b.xmpp.SendFile(s.dest, path); err != nil {
-				b.reply(fmt.Sprintf("⚠️ couldn't send file %q to %s: %v", path, s.dest, err))
 			}
 		}
 	}
@@ -760,20 +738,19 @@ func (b *Bridge) bumpRoutingNudge() bool {
 
 func (b *Bridge) resetRoutingNudges() { b.mu.Lock(); b.routingNudges = 0; b.mu.Unlock() }
 
-// replySegment is one routed chunk of an agent reply: a destination jid, the
-// text to send there, and any files to upload and attach.
+// replySegment is one routed chunk of an agent reply: a destination jid and the
+// text to send there.
 type replySegment struct {
-	dest  string
-	body  string
-	files []string
+	dest string
+	body string
 }
 
 // splitReplySegments parses an agent reply into "to: <jid>" segments. A line
 // whose first token after "to:" looks like a jid (contains "@") starts a new
-// segment; a "file: <path>" line within a segment attaches a file; other lines
-// form the body (that line's remainder plus subsequent lines up to the next
-// "to:"). Text before the first "to:" line is returned as leading (a routing
-// error). This lets one agent output fan out to several destinations.
+// segment; other lines form the body (that line's remainder plus subsequent
+// lines up to the next "to:"). Text before the first "to:" line is returned as
+// leading (a routing error). This lets one agent output fan out to several
+// destinations.
 func splitReplySegments(text string) (segs []replySegment, leading string) {
 	var leadingLines []string
 	cur := -1
@@ -788,10 +765,6 @@ func splitReplySegments(text string) (segs []replySegment, leading string) {
 			leadingLines = append(leadingLines, line)
 			continue
 		}
-		if path, ok := fileLine(line); ok {
-			segs[cur].files = append(segs[cur].files, path)
-			continue
-		}
 		if segs[cur].body == "" {
 			segs[cur].body = line
 		} else {
@@ -802,18 +775,6 @@ func splitReplySegments(text string) (segs []replySegment, leading string) {
 		segs[i].body = strings.TrimSpace(segs[i].body)
 	}
 	return segs, strings.TrimSpace(strings.Join(leadingLines, "\n"))
-}
-
-// fileLine reports whether line is a "file: <path>" attachment directive and
-// returns the path.
-func fileLine(line string) (path string, ok bool) {
-	t := strings.TrimSpace(line)
-	const p = "file:"
-	if len(t) < len(p) || !strings.EqualFold(t[:len(p)], p) {
-		return "", false
-	}
-	path = strings.TrimSpace(t[len(p):])
-	return path, path != ""
 }
 
 // routeLine reports whether line is a "to: <jid>" routing directive, returning
@@ -833,29 +794,6 @@ func routeLine(line string) (dest, inline string, ok bool) {
 		return "", "", false
 	}
 	return jid, inline, true
-}
-
-// extractReactions pulls "react: <emoji…>" directive lines out of an agent
-// reply. Each such line contributes its whitespace-separated tokens to the
-// emoji set (XEP-0444 carries the full set per message), and the line is
-// removed from the returned rest. Prose beginning with "react:" mid-line is not
-// affected — only whole lines whose first token is "react:". A directive with
-// no emoji ("react:" alone) contributes nothing, so the agent can't
-// accidentally clear a reaction; clearing is a lifecycle concern, not an
-// agent-facing one.
-func extractReactions(text string) (emojis []string, rest string) {
-	var kept []string
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimRight(line, "\r")
-		t := strings.TrimLeft(trimmed, " \t")
-		const p = "react:"
-		if len(t) >= len(p) && strings.EqualFold(t[:len(p)], p) {
-			emojis = append(emojis, strings.Fields(t[len(p):])...)
-			continue
-		}
-		kept = append(kept, trimmed)
-	}
-	return emojis, strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 func (b *Bridge) setDirectTurn(v bool) { b.mu.Lock(); b.directTurn = v; b.mu.Unlock() }

@@ -93,8 +93,8 @@ func TestTruncateLabel(t *testing.T) {
 }
 
 func TestSplitReplySegments(t *testing.T) {
-	seg := func(dest, body string, files ...string) replySegment {
-		return replySegment{dest: dest, body: body, files: files}
+	seg := func(dest, body string) replySegment {
+		return replySegment{dest: dest, body: body}
 	}
 	cases := []struct {
 		name        string
@@ -112,8 +112,6 @@ func TestSplitReplySegments(t *testing.T) {
 			[]replySegment{seg("a@x.com", "blah blah"), seg("b@x.com", "more stuff")}, ""},
 		{"multiline body per segment", "to: a@x\nl1\nl2\nto: b@x\nm1",
 			[]replySegment{seg("a@x", "l1\nl2"), seg("b@x", "m1")}, ""},
-		{"file attachment", "to: zach@x\nfile: /tmp/diff.patch\nhere's the diff",
-			[]replySegment{seg("zach@x", "here's the diff", "/tmp/diff.patch")}, ""},
 		{"case insensitive", "TO: zach@x\nyo",
 			[]replySegment{seg("zach@x", "yo")}, ""},
 		{"leading junk before first to", "oops forgot\nto: a@x\nbody",
@@ -129,34 +127,6 @@ func TestSplitReplySegments(t *testing.T) {
 		}
 		if !reflect.DeepEqual(gotSegs, c.wantSegs) {
 			t.Errorf("%s: segs = %+v, want %+v", c.name, gotSegs, c.wantSegs)
-		}
-	}
-}
-
-func TestExtractReactions(t *testing.T) {
-	cases := []struct {
-		name       string
-		in         string
-		wantEmojis []string
-		wantRest   string
-	}{
-		{"no directive", "just a reply", nil, "just a reply"},
-		{"single directive only", "react: 👀", []string{"👀"}, ""},
-		{"directive plus body", "react: ✅\nall done", []string{"✅"}, "all done"},
-		{"body then directive", "here you go\nreact: 👍", []string{"👍"}, "here you go"},
-		{"multiple emoji on one line", "react: 👀 ✅", []string{"👀", "✅"}, ""},
-		{"case insensitive", "REACT: 👀", []string{"👀"}, ""},
-		{"leading whitespace", "  react: 👀", []string{"👀"}, ""},
-		{"empty directive contributes nothing", "react:\nhi", nil, "hi"},
-		{"prose mid-line is not a directive", "I will react: soon", nil, "I will react: soon"},
-	}
-	for _, c := range cases {
-		gotEmojis, gotRest := extractReactions(c.in)
-		if !reflect.DeepEqual(gotEmojis, c.wantEmojis) {
-			t.Errorf("%s: emojis = %v, want %v", c.name, gotEmojis, c.wantEmojis)
-		}
-		if gotRest != c.wantRest {
-			t.Errorf("%s: rest = %q, want %q", c.name, gotRest, c.wantRest)
 		}
 	}
 }

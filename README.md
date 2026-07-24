@@ -86,7 +86,7 @@ Per-account fields:
 | `roomTrigger` | no | `nick` | address prefix that makes a room message a prompt (e.g. `pi` → `pi: …`) |
 | `uploadService` | no | auto-probed | XEP-0363 upload component JID for file transfer (e.g. `upload.chat.example.com`) |
 | `pingInterval` | no | `60s` | keepalive cadence (Go duration): XEP-0199 server ping + XEP-0410 MUC self-ping; `0` disables |
-| `reactions` | no | `false` | XEP-0444 emoji reactions on 1:1 owner messages: lifecycle → 👀 picked up / ✅ done / ⛔ aborted, plus an agent-driven `react: <emoji>` reply directive |
+| `reactions` | no | `false` | XEP-0444 emoji reactions on 1:1 owner messages: lifecycle → 👀 picked up / ✅ done / ⛔ aborted, and enables the agent-driven `send_reaction` tool (see [Agent tools](#agent-tools)) |
 | `avatar` | no | — | path to a local image (PNG/JPEG/GIF) published as the bot's XEP-0153 vCard profile picture on connect |
 
 Multiple accounts: add more keys under `accounts`; `default` is used unless you set
@@ -144,24 +144,32 @@ in a room. A reply whose `to:` is missing or points anywhere else is sent to the
 nothing is silently lost — the agent can't message arbitrary users. In a pure 1:1 account
 (no room) there are no prefixes; replies just go to the owner.
 
-**File transfer.** Inside a `to:` block the agent can attach files with `file: <path>`
-lines — pi-msg uploads each via **XEP-0363 HTTP Upload** and sends the resulting URL as an
-**XEP-0066** out-of-band message, so the recipient's client shows a downloadable file:
-
-```
-to: zach@chat.zachmanson.com
-Here's the diff and the build log.
-file: /home/beltino/work/change.patch
-file: /home/beltino/work/build.log
-```
-
-The upload component is discovered automatically (`upload.<domain>` / `httpupload.<domain>`)
-or set explicitly via the `uploadService` config field.
+**File transfer.** The agent sends files with the **`send_file`** tool (a structured tool
+call, not in-band text — see [Agent tools](#agent-tools) below): pi-msg uploads the file via
+**XEP-0363 HTTP Upload** and sends the resulting URL as an **XEP-0066** out-of-band message,
+so the recipient's client shows a downloadable file. The destination is allowlisted (owner,
+joined rooms, known occupants) exactly like a `to:` reply. The upload component is discovered
+automatically (`upload.<domain>` / `httpupload.<domain>`) or set explicitly via the
+`uploadService` config field.
 
 **The room must be non-anonymous** (ejabberd: *"Present real Jabber IDs to → anyone"*,
 optionally *members-only*). The owner is recognized by real JID; in a semi-anonymous
 room real JIDs are hidden, so the owner can't be distinguished and every message falls
 through to the untrusted/ambient tiers.
+
+## Agent tools
+
+Beyond reply text, the agent gets structured **tools** (registered by a small companion
+extension that pi-msg loads into `pi --mode rpc`, which relays each call back to pi-msg to
+perform the XMPP action):
+
+| Tool | What it does | Enabled when |
+| --- | --- | --- |
+| `send_reaction` | React to the human's latest message with an emoji (XEP-0444) | `reactions` is on |
+| `send_file` | Upload a local file and deliver it (XEP-0363 + XEP-0066); dest defaults to the current conversation, allowlisted | always |
+
+Reply **routing** (`to:`) stays an in-band text convention (above); only these discrete
+side-effect actions are tools.
 
 ## Run
 
