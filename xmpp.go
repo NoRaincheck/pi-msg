@@ -29,7 +29,7 @@ import (
 // maxBody is a soft cap for a single outgoing message body; longer text is
 // split on newline / word boundaries so servers don't reject oversized
 // stanzas.
-const maxBody = 3000
+const maxBody = 50000
 
 const chatStatesNS = "http://jabber.org/protocol/chatstates"
 
