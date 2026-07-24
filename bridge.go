@@ -82,13 +82,10 @@ func (b *Bridge) Run(ctx context.Context) error {
 			b.log("info", "pi stderr: "+line)
 		}
 	})
-	// Tell the companion extension which tools to register. send_file is always
-	// available; send_reaction only when the account opts into reactions (it
-	// mirrors the same opt-in gate as the in-band lifecycle reactions).
-	tools := []string{"file"}
-	if b.acct.Reactions {
-		tools = append(tools, "reaction")
-	}
+	// Tell the companion extension which tools to register. Both send_file and
+	// send_reaction are always available; only lifecycle auto-reactions (👀✅⛔)
+	// are gated behind the account's reactions flag.
+	tools := []string{"file", "reaction"}
 	b.rpc.env = []string{"PI_MSG_TOOLS=" + strings.Join(tools, ",")}
 
 	// Bring up XMPP first so we can report problems, then start pi.
