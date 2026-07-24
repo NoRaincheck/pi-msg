@@ -725,9 +725,10 @@ func (b *XMPPBridge) SetPresence(show, status string) {
 }
 
 // GoOffline broadcasts an unavailable presence so the owner's roster stops
-// showing the bot online. Safe to call when already offline (no-op).
-func (b *XMPPBridge) GoOffline() {
-	if err := b.encodeUnavailable(); err != nil {
+// showing the bot online, carrying an optional status describing why (e.g.
+// "session ended — …"). Safe to call when already offline (no-op).
+func (b *XMPPBridge) GoOffline(status string) {
+	if err := b.encodeUnavailable(status); err != nil {
 		b.log("warning", "offline presence failed: "+err.Error())
 	}
 }
@@ -939,8 +940,8 @@ func (b *XMPPBridge) encodePresence(show, status string) error {
 }
 
 // encodeUnavailable broadcasts a roster-wide unavailable presence, marking the
-// bot offline.
-func (b *XMPPBridge) encodeUnavailable() error {
+// bot offline, with an optional <status> line describing why.
+func (b *XMPPBridge) encodeUnavailable(status string) error {
 	session := b.currentSession()
 	if session == nil {
 		return fmt.Errorf("not online")
@@ -948,7 +949,8 @@ func (b *XMPPBridge) encodeUnavailable() error {
 	p := struct {
 		XMLName xml.Name `xml:"presence"`
 		Type    string   `xml:"type,attr"`
-	}{Type: "unavailable"}
+		Status  string   `xml:"status,omitempty"`
+	}{Type: "unavailable", Status: status}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return session.Encode(ctx, p)

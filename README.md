@@ -188,8 +188,10 @@ Dev shell (Go + gopls) via `nix develop`, or automatically with
 [direnv](https://direnv.net/) — the repo ships a `.envrc` (`use flake`); run
 `direnv allow` once.
 
-Set `PI_MSG_DEBUG=1` to print connection/status/stderr diagnostics. On startup you
-should see `🟢 pi-msg bridge up` in your chat client.
+Set `PI_MSG_DEBUG=1` to print connection/status/stderr diagnostics. On startup the bot
+simply comes **online** in your roster (presence `listening`); on shutdown or a pi crash it
+goes **offline** with a `<status>` describing why and when — pi-msg no longer posts chat
+banners for these lifecycle events.
 
 Requirements: Go ≥ 1.26 (to build), and a `pi` on `PATH` that's logged into a provider
 (`pi` → `/login`).

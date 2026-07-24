@@ -30,7 +30,6 @@ type Bridge struct {
 	streamingRun   bool
 	repliedThisRun bool
 	shuttingDown   bool
-	bannerSent     bool
 	directTurn     bool   // active turn arrived as a 1:1 owner DM (drives typing)
 	routingNudges  int    // mis-routed-reply corrections sent this user turn (bounded)
 	reactTo        string // full JID of the owner message the current run reacts to
@@ -93,7 +92,9 @@ func (b *Bridge) Run(ctx context.Context) error {
 	b.rpc.env = []string{"PI_MSG_TOOLS=" + strings.Join(tools, ",")}
 
 	// Bring up XMPP first so we can report problems, then start pi.
-	go b.xmpp.Run(ctx, b.onConnected)
+	// No connect callback: the bot appearing online (presence "listening") is
+	// the startup signal now, in place of a chat banner.
+	go b.xmpp.Run(ctx, nil)
 	if err := b.rpc.Start(); err != nil {
 		return err
 	}
@@ -113,38 +114,25 @@ func (b *Bridge) Run(ctx context.Context) error {
 	}
 }
 
-// onConnected sends the startup banner once, on the first successful connect.
-func (b *Bridge) onConnected() {
-	b.mu.Lock()
-	if b.bannerSent {
-		b.mu.Unlock()
-		return
-	}
-	b.bannerSent = true
-	b.mu.Unlock()
-	b.reply("🟢 pi-msg bridge up. Chat to drive the agent; try /new, /compact, /model, /think, /abort, /dump [pretty], /quit.")
-}
-
 func (b *Bridge) onPiExit() error {
 	if b.rpc.StoppedIntentionally() {
 		return nil
 	}
 	// pi died on its own (crash): XMPP is still connected, so clear the typing
-	// indicator, report the exit error if there is one, and drop presence — in
-	// that order, while still online.
+	// indicator, then drop presence — carrying the reason as the offline status
+	// rather than a chat message.
 	b.stopTyping()
 	err := b.rpc.ExitErr()
 	if err != nil {
-		b.reply(fmt.Sprintf("🔴 pi crashed: %v. Bridge shutting down.", err))
-	} else {
-		b.reply("🔴 pi exited unexpectedly (no error reported). Bridge shutting down.")
-	}
-	b.xmpp.GoOffline()
-	if err != nil {
+		b.xmpp.GoOffline(fmt.Sprintf("offline — pi crashed: %v (%s)", err, nowStamp()))
 		return fmt.Errorf("pi exited: %v", err)
 	}
+	b.xmpp.GoOffline("offline — pi exited unexpectedly (" + nowStamp() + ")")
 	return fmt.Errorf("pi exited unexpectedly")
 }
+
+// nowStamp is a short local timestamp for presence status lines.
+func nowStamp() string { return time.Now().Format("2006-01-02 15:04:05 MST") }
 
 func (b *Bridge) shutdown(reason string) {
 	b.mu.Lock()
@@ -158,8 +146,7 @@ func (b *Bridge) shutdown(reason string) {
 	// Clear the typing indicator (sends chat-state "active") while still online,
 	// so the owner isn't left seeing "typing…" against an offline bot.
 	b.stopTyping()
-	b.reply("🔴 session ended gracefully — " + reason + ".")
-	b.xmpp.GoOffline()
+	b.xmpp.GoOffline(fmt.Sprintf("offline — session ended (%s) at %s", reason, nowStamp()))
 	b.rpc.Stop()
 }
 
