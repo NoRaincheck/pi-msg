@@ -119,14 +119,17 @@ func (b *Bridge) onPiExit() error {
 		return nil
 	}
 	// pi died on its own (crash): XMPP is still connected, so clear the typing
-	// indicator, then drop presence — carrying the reason as the offline status
-	// rather than a chat message.
+	// indicator and — unlike the graceful lifecycle, which is presence-only — post
+	// a loud chat message so the crash isn't missed, then drop presence carrying
+	// the same reason as the offline status. The message goes first, while online.
 	b.stopTyping()
 	err := b.rpc.ExitErr()
 	if err != nil {
+		b.reply(fmt.Sprintf("🔴 pi crashed: %v. Bridge shutting down.", err))
 		b.xmpp.GoOffline(fmt.Sprintf("offline — pi crashed: %v (%s)", err, nowStamp()))
 		return fmt.Errorf("pi exited: %v", err)
 	}
+	b.reply("🔴 pi exited unexpectedly (no error reported). Bridge shutting down.")
 	b.xmpp.GoOffline("offline — pi exited unexpectedly (" + nowStamp() + ")")
 	return fmt.Errorf("pi exited unexpectedly")
 }
