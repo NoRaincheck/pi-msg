@@ -112,3 +112,69 @@ func TestReceiptAckMarshal(t *testing.T) {
 		}
 	}
 }
+
+// reactionEl / reactionsPayload mirror the wire struct built by encodeReaction,
+// so the XEP-0444 form can be asserted without a live session.
+type reactionEl struct {
+	XMLName xml.Name `xml:"reaction"`
+	Text    string   `xml:",chardata"`
+}
+
+func reactionsPayload(forID string, emojis []string) any {
+	p := struct {
+		XMLName   xml.Name
+		ID        string `xml:"id,attr"`
+		Reactions []reactionEl
+	}{XMLName: xml.Name{Space: reactionsNS, Local: "reactions"}, ID: forID}
+	for _, e := range emojis {
+		if e == "" {
+			continue
+		}
+		p.Reactions = append(p.Reactions, reactionEl{Text: e})
+	}
+	return p
+}
+
+func TestReactionsMarshal(t *testing.T) {
+	out, err := xml.Marshal(reactionsPayload("msg-42", []string{"👀"}))
+	if err != nil {
+		t.Fatalf("marshal reactions: %v", err)
+	}
+	got := string(out)
+	for _, want := range []string{
+		"<reactions",
+		`xmlns="` + reactionsNS + `"`,
+		`id="msg-42"`,
+		"<reaction>👀</reaction>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reactions = %q, missing %q", got, want)
+		}
+	}
+}
+
+func TestReactionsMarshalMultiple(t *testing.T) {
+	out, err := xml.Marshal(reactionsPayload("m1", []string{"👀", "✅"}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(out)
+	if !strings.Contains(got, "<reaction>👀</reaction>") || !strings.Contains(got, "<reaction>✅</reaction>") {
+		t.Errorf("expected both reactions, got %q", got)
+	}
+}
+
+func TestReactionsMarshalEmptyClears(t *testing.T) {
+	// No emoji → an empty <reactions>, which is XEP-0444's "clear" form.
+	out, err := xml.Marshal(reactionsPayload("m1", nil))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(out)
+	if strings.Contains(got, "<reaction>") {
+		t.Errorf("empty reactions should carry no <reaction> child, got %q", got)
+	}
+	if !strings.Contains(got, `id="m1"`) || !strings.Contains(got, "reactions") {
+		t.Errorf("empty reactions still needs the reactions element + id, got %q", got)
+	}
+}

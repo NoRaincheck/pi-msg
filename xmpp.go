@@ -41,6 +41,10 @@ const (
 	chatMarkersNS = "urn:xmpp:chat-markers:0"
 )
 
+// reactionsNS is XEP-0444 message reactions: the agent reacts to an owner
+// message with emoji (e.g. 👀 picked up, ✅ done, ⛔ aborted).
+const reactionsNS = "urn:xmpp:reactions:0"
+
 // newStanzaID generates a random stanza id.
 func newStanzaID() string {
 	b := make([]byte, 8)
@@ -100,6 +104,8 @@ type InboundMessage struct {
 	FromOwner bool   // sender is the configured owner
 	Direct    bool   // arrived as a 1:1 chat, not groupchat (reply goes back 1:1)
 	Room      string // source room bare JID (room mode); "" for 1:1
+	ID        string // stanza id (used as the XEP-0444 reaction target)
+	From      string // full from-JID, so a reaction routes back to that resource
 }
 
 // XMPPBridge owns a single account's XMPP connection: it maintains a
@@ -458,7 +464,7 @@ func (b *XMPPBridge) dispatchDirect(m incomingMsg) {
 	}
 	// The agent is about to take this in — acknowledge it as read/delivered.
 	b.sendReceipts(m)
-	b.onMsg(InboundMessage{Body: m.body, RealJID: b.ownerBare, FromOwner: true, Direct: true})
+	b.onMsg(InboundMessage{Body: m.body, RealJID: b.ownerBare, FromOwner: true, Direct: true, ID: m.id, From: m.from})
 }
 
 // dispatchRoom applies groupchat guards and forwards room messages to onMsg,
@@ -783,6 +789,59 @@ func (b *XMPPBridge) encodeReceipt(to, ns, local, forID string) error {
 	}
 	msg.Ack.XMLName = xml.Name{Space: ns, Local: local}
 	msg.Ack.ID = forID
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return session.Encode(ctx, msg)
+}
+
+// SendReaction reacts to message forID (authored by `to`) with the given emoji,
+// per XEP-0444. Each stanza carries the full reaction set for the
+// (agent, message) pair, so a later call replaces an earlier one; calling with
+// no emoji sends an empty <reactions>, clearing any prior reaction.
+// Best-effort: a missing target or an encode failure is logged, not fatal.
+func (b *XMPPBridge) SendReaction(to, forID string, emojis ...string) {
+	if to == "" || forID == "" {
+		return
+	}
+	if err := b.encodeReaction(to, forID, emojis); err != nil {
+		b.log("warning", "reaction failed: "+err.Error())
+	}
+}
+
+// encodeReaction sends a bodyless message to `to` carrying an XEP-0444
+// <reactions id='forID'> element with one <reaction> child per emoji. An empty
+// emojis slice yields an empty <reactions>, which clears the reaction set.
+func (b *XMPPBridge) encodeReaction(to, forID string, emojis []string) error {
+	session := b.currentSession()
+	if session == nil {
+		return fmt.Errorf("not online")
+	}
+	toJID, err := jid.Parse(to)
+	if err != nil {
+		return fmt.Errorf("invalid recipient %q: %w", to, err)
+	}
+	type reaction struct {
+		XMLName xml.Name `xml:"reaction"`
+		Text    string   `xml:",chardata"`
+	}
+	msg := struct {
+		stanza.Message
+		Reactions struct {
+			XMLName   xml.Name
+			ID        string `xml:"id,attr"`
+			Reactions []reaction
+		}
+	}{
+		Message: stanza.Message{To: toJID, Type: stanza.ChatMessage},
+	}
+	msg.Reactions.XMLName = xml.Name{Space: reactionsNS, Local: "reactions"}
+	msg.Reactions.ID = forID
+	for _, e := range emojis {
+		if e == "" {
+			continue
+		}
+		msg.Reactions.Reactions = append(msg.Reactions.Reactions, reaction{Text: e})
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return session.Encode(ctx, msg)

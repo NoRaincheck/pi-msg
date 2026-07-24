@@ -86,6 +86,7 @@ Per-account fields:
 | `roomTrigger` | no | `nick` | address prefix that makes a room message a prompt (e.g. `pi` → `pi: …`) |
 | `uploadService` | no | auto-probed | XEP-0363 upload component JID for file transfer (e.g. `upload.chat.example.com`) |
 | `pingInterval` | no | `60s` | keepalive cadence (Go duration): XEP-0199 server ping + XEP-0410 MUC self-ping; `0` disables |
+| `reactions` | no | `false` | XEP-0444 emoji reactions on 1:1 owner messages: lifecycle → 👀 picked up / ✅ done / ⛔ aborted, plus an agent-driven `react: <emoji>` reply directive |
 
 Multiple accounts: add more keys under `accounts`; `default` is used unless you set
 `PI_MSG_ACCOUNT=<name>`. In 1:1 mode only the `owner` JID may drive the agent.

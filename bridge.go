@@ -31,8 +31,10 @@ type Bridge struct {
 	repliedThisRun bool
 	shuttingDown   bool
 	bannerSent     bool
-	directTurn     bool // active turn arrived as a 1:1 owner DM (drives typing)
-	routingNudges  int  // mis-routed-reply corrections sent this user turn (bounded)
+	directTurn     bool   // active turn arrived as a 1:1 owner DM (drives typing)
+	routingNudges  int    // mis-routed-reply corrections sent this user turn (bounded)
+	reactTo        string // full JID of the owner message the current run reacts to
+	reactID        string // stanza id of that message (XEP-0444 target); "" disables
 
 	typingMu   sync.Mutex
 	typingStop chan struct{}
@@ -157,10 +159,12 @@ func (b *Bridge) handleRPCEvent(ev Event) {
 		b.setStreaming(true)
 		b.setReplied(false)
 		b.xmpp.SetPresence("dnd", "thinking…")
+		b.lifecycleReact("👀") // picked up (opt-in via the reactions flag)
 	case "agent_settled":
 		b.setStreaming(false)
 		b.stopTyping()
 		b.xmpp.SetPresence("", "listening")
+		b.lifecycleReact("✅") // done
 		// The reply text + typing/presence already signal "done". Only nudge if
 		// the run produced no message, so silence isn't mistaken for a hang.
 		if !b.replied() {
@@ -222,8 +226,9 @@ func (b *Bridge) onInbound(m InboundMessage) {
 	b.setDirectTurn(m.Direct)
 	b.resetRoutingNudges() // fresh user turn — allow corrections again
 	if m.Direct {
-		// Owner 1:1: origin is the owner; no separate sender.
-		b.handleCanonical(m.Body, b.acct.Owner, "")
+		// Owner 1:1: origin is the owner; no separate sender. The reaction target
+		// is this message (routed to its full from-JID).
+		b.handleCanonical(m.Body, b.acct.Owner, "", m.From, m.ID)
 		return
 	}
 	b.handleRoom(m)
@@ -262,7 +267,8 @@ func (b *Bridge) handleRoom(m InboundMessage) {
 	action, body := b.classify(m)
 	switch action {
 	case actionCanonical:
-		b.handleCanonical(body, m.Room, m.RealJID)
+		// Room turn: no 1:1 reaction target (empty clears any stale one).
+		b.handleCanonical(body, m.Room, m.RealJID, "", "")
 	case actionCommentary:
 		b.dispatchCommentary(body, m.Nick, m.Room, m.RealJID)
 	case actionAmbient:
@@ -274,7 +280,7 @@ func (b *Bridge) handleRoom(m InboundMessage) {
 // dispatch directly; anything else becomes a canonical prompt. origin is the
 // jid the message arrived on (owner or room); sender is the individual (room
 // only), both surfaced to the agent for explicit reply routing.
-func (b *Bridge) handleCanonical(text, origin, sender string) {
+func (b *Bridge) handleCanonical(text, origin, sender, reactTo, reactID string) {
 	t := strings.TrimSpace(text)
 	if t == "" {
 		return
@@ -282,6 +288,8 @@ func (b *Bridge) handleCanonical(text, origin, sender string) {
 	if strings.HasPrefix(t, "/") && b.handleCommand(t) {
 		return
 	}
+	// A real prompt: point lifecycle/agent reactions at the message that drove it.
+	b.setReactTarget(reactTo, reactID)
 	b.rpc.Prompt(b.composePrompt(t, true, "", origin, sender), b.steerBehavior())
 	// Immediate "got it, working" ack; agent_start confirms it shortly (deduped).
 	// Typing is no longer lit here — it now tracks literal text streaming.
@@ -296,6 +304,7 @@ func (b *Bridge) dispatchCommentary(body, nick, origin, sender string) {
 	if t == "" {
 		return
 	}
+	b.setReactTarget("", "") // room turn: no 1:1 reaction target
 	b.rpc.Prompt(b.composePrompt(t, false, nick, origin, sender), b.steerBehavior())
 	b.xmpp.SetPresence("dnd", "thinking…")
 }
@@ -324,6 +333,7 @@ func (b *Bridge) handleCommand(t string) bool {
 	case "abort", "stop":
 		b.rpc.Abort()
 		b.settleLocally()
+		b.lifecycleReact("⛔") // aborted
 		b.reply("⛔ aborted")
 	case "quit", "exit":
 		b.shutdown("requested over chat")
@@ -506,9 +516,17 @@ func (b *Bridge) composePrompt(body string, canonical bool, nick, origin, sender
 	if b.acct.RoomMode() {
 		sb.WriteString("\n\n")
 		sb.WriteString(b.routingHint())
+	} else if b.acct.Reactions {
+		// 1:1 with reactions on: offer the agent a low-noise ack channel.
+		sb.WriteString("\n\n")
+		sb.WriteString(reactionHint)
 	}
 	return sb.String()
 }
+
+// reactionHint tells the agent, in 1:1 mode with reactions enabled, that it may
+// react to the owner's message with emoji instead of (or before) a text reply.
+const reactionHint = "[reactions: to acknowledge this message with an emoji instead of prose, include a line \"react: <emoji>\" in your reply (e.g. \"react: 👀\" for seen, \"react: ✅\" for done). The emoji attaches to the message above as a reaction; any other text is sent normally. Use this for lightweight acks; use a normal reply when you have something to say.]"
 
 // matchTrigger reports whether body addresses the bot by its room trigger
 // (e.g. "pi:" / "pi,") and returns the remaining text with the prefix removed.
@@ -578,6 +596,16 @@ func (b *Bridge) reply(text string) {
 // agent is nudged to resend correctly.
 func (b *Bridge) deliverReply(text string) {
 	if !b.acct.RoomMode() {
+		// Agent-driven reactions (1:1): pull any "react: <emoji>" directive lines
+		// out of the reply, apply them to the message we're answering, and send
+		// the remainder as normal text. Gated by the reactions flag (same switch
+		// as the lifecycle reactions), so it's fully off when the owner opts out.
+		if b.acct.Reactions {
+			if emojis, rest := extractReactions(text); len(emojis) > 0 {
+				b.sendReaction(emojis...)
+				text = rest
+			}
+		}
 		if strings.TrimSpace(text) != "" {
 			b.xmpp.Send(text)
 		}
@@ -718,6 +746,29 @@ func routeLine(line string) (dest, inline string, ok bool) {
 		return "", "", false
 	}
 	return jid, inline, true
+}
+
+// extractReactions pulls "react: <emoji…>" directive lines out of an agent
+// reply. Each such line contributes its whitespace-separated tokens to the
+// emoji set (XEP-0444 carries the full set per message), and the line is
+// removed from the returned rest. Prose beginning with "react:" mid-line is not
+// affected — only whole lines whose first token is "react:". A directive with
+// no emoji ("react:" alone) contributes nothing, so the agent can't
+// accidentally clear a reaction; clearing is a lifecycle concern, not an
+// agent-facing one.
+func extractReactions(text string) (emojis []string, rest string) {
+	var kept []string
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimRight(line, "\r")
+		t := strings.TrimLeft(trimmed, " \t")
+		const p = "react:"
+		if len(t) >= len(p) && strings.EqualFold(t[:len(p)], p) {
+			emojis = append(emojis, strings.Fields(t[len(p):])...)
+			continue
+		}
+		kept = append(kept, trimmed)
+	}
+	return emojis, strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 func (b *Bridge) setDirectTurn(v bool) { b.mu.Lock(); b.directTurn = v; b.mu.Unlock() }
@@ -868,6 +919,41 @@ func (b *Bridge) settleLocally() {
 }
 
 // --- small state accessors ---
+
+// setReactTarget records which owner message the next run's reactions attach
+// to. Called before each prompt: a 1:1 owner turn passes its full JID + stanza
+// id; a room turn passes "" to clear any stale 1:1 target so a room-triggered
+// run never reacts to an old DM.
+func (b *Bridge) setReactTarget(to, id string) {
+	b.mu.Lock()
+	b.reactTo, b.reactID = to, id
+	b.mu.Unlock()
+}
+
+// sendReaction sends a XEP-0444 reaction (emoji set) to the current run's
+// target message. No-ops when no target is set (e.g. a room turn, where 1:1
+// reaction tracking doesn't apply). Passing no emoji clears the reaction. This
+// is the ungated path used for deliberate, agent-driven reactions.
+func (b *Bridge) sendReaction(emojis ...string) {
+	b.mu.Lock()
+	to, id := b.reactTo, b.reactID
+	b.mu.Unlock()
+	if to == "" || id == "" {
+		return
+	}
+	b.xmpp.SendReaction(to, id, emojis...)
+}
+
+// lifecycleReact maps a run-lifecycle beat to a reaction, but only when the
+// per-account reactions flag is on — auto-reacting on every run can be noisy,
+// so it's opt-in. Deliberate agent-driven reactions go through sendReaction and
+// share the same flag gate at their call site.
+func (b *Bridge) lifecycleReact(emojis ...string) {
+	if !b.acct.Reactions {
+		return
+	}
+	b.sendReaction(emojis...)
+}
 
 func (b *Bridge) setStreaming(v bool) { b.mu.Lock(); b.streamingRun = v; b.mu.Unlock() }
 func (b *Bridge) streaming() bool     { b.mu.Lock(); defer b.mu.Unlock(); return b.streamingRun }

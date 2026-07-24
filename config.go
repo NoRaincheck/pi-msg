@@ -49,6 +49,11 @@ type Account struct {
 	Resource string `json:"resource,omitempty"`
 	// ToolActivity mirrors a one-line notice each time a tool starts.
 	ToolActivity bool `json:"toolActivity,omitempty"`
+	// Reactions, when true, enables XEP-0444 emoji reactions on 1:1 owner
+	// messages: the run lifecycle maps to 👀 (picked up) / ✅ (done) / ⛔
+	// (aborted), and the agent may react deliberately via a "react: <emoji>"
+	// line. Off by default so it doesn't double up with read receipts + presence.
+	Reactions bool `json:"reactions,omitempty"`
 	// Model is the model pattern to launch pi with (e.g.
 	// "anthropic/claude-sonnet-latest"). Optional.
 	Model string `json:"model,omitempty"`
@@ -96,6 +101,7 @@ type ResolvedAccount struct {
 	Service       string
 	Resource      string
 	ToolActivity  bool
+	Reactions     bool
 	Model         string
 	Workdir       string
 	Rooms         []string
@@ -250,6 +256,7 @@ func resolveAccount(cfg *Config, requested string) (ResolvedAccount, error) {
 		Service:       service,
 		Resource:      resource,
 		ToolActivity:  acct.ToolActivity,
+		Reactions:     acct.Reactions,
 		Model:         acct.Model,
 		Workdir:       acct.Workdir,
 		Rooms:         rooms,

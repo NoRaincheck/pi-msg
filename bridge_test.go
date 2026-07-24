@@ -133,6 +133,34 @@ func TestSplitReplySegments(t *testing.T) {
 	}
 }
 
+func TestExtractReactions(t *testing.T) {
+	cases := []struct {
+		name       string
+		in         string
+		wantEmojis []string
+		wantRest   string
+	}{
+		{"no directive", "just a reply", nil, "just a reply"},
+		{"single directive only", "react: 👀", []string{"👀"}, ""},
+		{"directive plus body", "react: ✅\nall done", []string{"✅"}, "all done"},
+		{"body then directive", "here you go\nreact: 👍", []string{"👍"}, "here you go"},
+		{"multiple emoji on one line", "react: 👀 ✅", []string{"👀", "✅"}, ""},
+		{"case insensitive", "REACT: 👀", []string{"👀"}, ""},
+		{"leading whitespace", "  react: 👀", []string{"👀"}, ""},
+		{"empty directive contributes nothing", "react:\nhi", nil, "hi"},
+		{"prose mid-line is not a directive", "I will react: soon", nil, "I will react: soon"},
+	}
+	for _, c := range cases {
+		gotEmojis, gotRest := extractReactions(c.in)
+		if !reflect.DeepEqual(gotEmojis, c.wantEmojis) {
+			t.Errorf("%s: emojis = %v, want %v", c.name, gotEmojis, c.wantEmojis)
+		}
+		if gotRest != c.wantRest {
+			t.Errorf("%s: rest = %q, want %q", c.name, gotRest, c.wantRest)
+		}
+	}
+}
+
 func TestClassifyDest(t *testing.T) {
 	x := NewXMPPBridge(
 		ResolvedAccount{Rooms: []string{"team@muc.x"}, Owner: "zach@x"},
