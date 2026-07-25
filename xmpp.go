@@ -157,7 +157,7 @@ func NewXMPPBridge(acct ResolvedAccount, onMsg func(InboundMessage), logf func(l
 		roomBares: roomBares,
 		onMsg:     onMsg,
 		logf:      logf,
-		presence:  "listening",
+		presence:  "listening (" + nowStamp() + ")",
 		seen:      make(map[string]struct{}),
 		occupants: make(map[string]map[string]string),
 		selfNick:  make(map[string]string),

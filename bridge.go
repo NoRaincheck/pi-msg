@@ -167,7 +167,7 @@ func (b *Bridge) handleRPCEvent(ev Event) {
 	case "agent_settled":
 		b.setStreaming(false)
 		b.stopTyping()
-		b.xmpp.SetPresence("", "listening")
+		b.xmpp.SetPresence("", "listening ("+nowStamp()+")")
 		b.lifecycleReact("✅") // done
 		// The reply text + typing/presence already signal "done". Only nudge if
 		// the run produced no message, so silence isn't mistaken for a hang.
@@ -927,7 +927,7 @@ func (b *Bridge) stopTyping() {
 func (b *Bridge) settleLocally() {
 	b.setStreaming(false)
 	b.stopTyping()
-	b.xmpp.SetPresence("", "listening")
+	b.xmpp.SetPresence("", "listening ("+nowStamp()+")")
 }
 
 // --- small state accessors ---
