@@ -142,6 +142,11 @@ type XMPPBridge struct {
 	avatarType string // image MIME type, e.g. "image/png"
 	avatarB64  string // base64 of the raw image bytes (vCard <BINVAL>)
 	avatarHash string // lowercase hex SHA-1 of the raw bytes (presence photo hash)
+
+	// msgHistory maps stanza IDs to their source JID (inbound and outbound) so
+	// send_reaction can target arbitrary messages by ID. Capped at 500 entries;
+	// oldest is evicted when full.
+	msgHistory map[string]msgHistoryEntry
 }
 
 // NewXMPPBridge constructs a bridge. onMsg is called for each message that
@@ -152,15 +157,16 @@ func NewXMPPBridge(acct ResolvedAccount, onMsg func(InboundMessage), logf func(l
 		roomBares[bareJid(room)] = true
 	}
 	b := &XMPPBridge{
-		acct:      acct,
-		ownerBare: bareJid(acct.Owner),
-		roomBares: roomBares,
-		onMsg:     onMsg,
-		logf:      logf,
-		presence:  "listening (" + nowStamp() + ")",
-		seen:      make(map[string]struct{}),
-		occupants: make(map[string]map[string]string),
-		selfNick:  make(map[string]string),
+		acct:       acct,
+		ownerBare:  bareJid(acct.Owner),
+		roomBares:  roomBares,
+		onMsg:      onMsg,
+		logf:       logf,
+		presence:   "listening (" + nowStamp() + ")",
+		seen:       make(map[string]struct{}),
+		occupants:  make(map[string]map[string]string),
+		selfNick:   make(map[string]string),
+		msgHistory: make(map[string]msgHistoryEntry),
 	}
 	b.loadAvatar()
 	return b
@@ -516,6 +522,10 @@ func (b *XMPPBridge) dispatchDirect(m incomingMsg) {
 	if m.id != "" && b.seenDuplicate(m.id) {
 		return
 	}
+	// Record the inbound message in history so send_reaction can target it by ID.
+	if m.id != "" {
+		b.recordMessage(m.id, m.from)
+	}
 	// The agent is about to take this in — acknowledge it as read/delivered.
 	b.sendReceipts(m)
 	b.onMsg(InboundMessage{Body: m.body, RealJID: b.ownerBare, FromOwner: true, Direct: true, ID: m.id, From: m.from})
@@ -546,6 +556,10 @@ func (b *XMPPBridge) dispatchRoom(m incomingMsg) {
 	}
 	if m.id != "" && b.seenDuplicate(m.id) {
 		return
+	}
+	// Record the inbound room message in history so send_reaction can target it by ID.
+	if m.id != "" {
+		b.recordMessage(m.id, m.from)
 	}
 	real := b.occupantRealJID(room, nick)
 	b.onMsg(InboundMessage{
@@ -781,6 +795,7 @@ func (b *XMPPBridge) encodeChat(to, body string, typ stanza.MessageType) (string
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	b.recordMessage(id, to)
 	return id, session.Encode(ctx, msg)
 }
 
@@ -857,6 +872,56 @@ func (b *XMPPBridge) encodeReceipt(to, ns, local, forID string) error {
 	return session.Encode(ctx, msg)
 }
 
+// msgHistoryEntry records an inbound or outbound message stanza in the
+// history ring buffer, so the bridge can resolve a stanza ID to its source
+// JID without the agent having to remember it.
+type msgHistoryEntry struct {
+	FromJID   string
+	Timestamp time.Time
+}
+
+// msgHistoryCap is the maximum number of stanza IDs retained in history.
+const msgHistoryCap = 500
+
+// recordMessage records a stanza ID -> JID mapping in the history ring
+// buffer, evicting the oldest entry if the buffer is full.
+func (b *XMPPBridge) recordMessage(id, fromJID string) {
+	if id == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, exists := b.msgHistory[id]; exists {
+		b.msgHistory[id] = msgHistoryEntry{FromJID: fromJID, Timestamp: time.Now()}
+		return
+	}
+	if len(b.msgHistory) >= msgHistoryCap {
+		// Evict the oldest entry.
+		var oldestKey string
+		var oldestTime time.Time
+		for k, v := range b.msgHistory {
+			if oldestKey == "" || v.Timestamp.Before(oldestTime) {
+				oldestKey, oldestTime = k, v.Timestamp
+			}
+		}
+		delete(b.msgHistory, oldestKey)
+	}
+	b.msgHistory[id] = msgHistoryEntry{FromJID: fromJID, Timestamp: time.Now()}
+}
+
+// lookupMessage returns the from-JID for a recorded stanza ID, or "" if not found.
+func (b *XMPPBridge) lookupMessage(id string) string {
+	if id == "" {
+		return ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if e, ok := b.msgHistory[id]; ok {
+		return e.FromJID
+	}
+	return ""
+}
+
 // SendReaction reacts to message forID (authored by `to`) with the given emoji,
 // per XEP-0444. Each stanza carries the full reaction set for the
 // (agent, message) pair, so a later call replaces an earlier one; calling with
@@ -869,6 +934,13 @@ func (b *XMPPBridge) SendReaction(to, forID string, emojis ...string) {
 	if err := b.encodeReaction(to, forID, emojis); err != nil {
 		b.log("warning", "reaction failed: "+err.Error())
 	}
+}
+
+// SendReactionTo reacts to message forID (authored by `to`) with a single
+// emoji, taking explicit target parameters. Unlike SendReaction, it accepts a
+// single required emoji string. Calling with an empty emoji clears the reaction.
+func (b *XMPPBridge) SendReactionTo(to, forID, emoji string) {
+	b.SendReaction(to, forID, emoji)
 }
 
 // encodeReaction sends a bodyless message to `to` carrying an XEP-0444

@@ -237,10 +237,12 @@ func (b *Bridge) handleUIRequest(ev Event) {
 // `react:` / `file:` text conventions (issue #8 spike).
 func (b *Bridge) handleToolRelay(id, payload string) {
 	var cmd struct {
-		Action string `json:"action"`
-		Emoji  string `json:"emoji"`
-		Path   string `json:"path"`
-		To     string `json:"to"`
+		Action    string `json:"action"`
+		Emoji     string `json:"emoji"`
+		Path      string `json:"path"`
+		To        string `json:"to"`
+		MessageID string `json:"messageId"`
+		From      string `json:"from"`
 	}
 	if err := json.Unmarshal([]byte(payload), &cmd); err != nil {
 		b.log("warning", "bad tool-relay payload: "+err.Error())
@@ -249,13 +251,25 @@ func (b *Bridge) handleToolRelay(id, payload string) {
 	}
 	switch cmd.Action {
 	case "react":
-		b.mu.Lock()
-		to, rid := b.reactTo, b.reactID
-		b.mu.Unlock()
+		to, rid := cmd.From, cmd.MessageID
+		if to == "" && rid != "" {
+			// No explicit from-JID: look up the cached one.
+			to = b.xmpp.lookupMessage(rid)
+		}
+		if rid == "" {
+			// No explicit message ID: fall back to the current run's target.
+			b.mu.Lock()
+			to, rid = b.reactTo, b.reactID
+			b.mu.Unlock()
+		}
 		b.log("info", fmt.Sprintf("tool-relay react: emoji=%q target to=%q id=%q", cmd.Emoji, to, rid))
-		b.sendReaction(cmd.Emoji)
-		// Success iff there was a message to react to; reactions are instant.
-		b.rpc.RespondUI(id, to != "" && rid != "")
+		b.xmpp.SendReaction(to, rid, cmd.Emoji)
+		// Success iff we had a target; reactions are instant.
+		ok := to != "" && rid != ""
+		if !ok && cmd.MessageID != "" {
+			b.log("warning", fmt.Sprintf("reaction target %q not found in message history and no from-JID supplied", cmd.MessageID))
+		}
+		b.rpc.RespondUI(id, ok)
 	case "file":
 		dest := cmd.To
 		if dest == "" {

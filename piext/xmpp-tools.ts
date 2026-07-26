@@ -62,25 +62,36 @@ export default function xmppTools(pi: ExtensionAPI) {
 			name: "send_reaction",
 			label: "React (XMPP)",
 			description:
-				"React to the human's most recent chat message with a single emoji, over XMPP (XEP-0444). Use for a lightweight acknowledgement in place of a text reply.",
-			promptSnippet: "React to the latest chat message with an emoji",
+				"React to a chat message with a single emoji over XMPP (XEP-0444). By default reacts to the most recent incoming message; pass messageId to target an arbitrary message by its stanza ID.",
+			promptSnippet: "React to a chat message with an emoji",
 			promptGuidelines: [
-				"Use send_reaction to acknowledge the human's message with one emoji (e.g. 👀 for seen, ✅ for done) when a full text reply isn't warranted.",
+				"Use send_reaction to acknowledge a message with one emoji (e.g. 👀 for seen, ✅ for done).",
+				"To react to a specific message, include its stanza ID as messageId. The from-JID is resolved from the message history cache; if that fails you may also supply the from-JID explicitly.",
 			],
 			parameters: Type.Object({
 				emoji: Type.String({ description: "A single emoji, e.g. 👀 or ✅" }),
+				messageId: Type.Optional(Type.String({ description: "Optional XMPP stanza ID of the target message; omitting targets the most recent incoming message" })),
+				from: Type.Optional(Type.String({ description: "Optional full JID of the target message's author; resolved automatically from message history cache when messageId is provided" })),
 			}),
 			async execute(_toolCallId, params) {
-				const emoji = String((params as { emoji?: string }).emoji ?? "").trim();
+				const p = params as { emoji?: string; messageId?: string; from?: string };
+				const emoji = String(p.emoji ?? "").trim();
 				if (!emoji) {
 					throw new Error("emoji is required");
 				}
-				if (!(await relay("react", { emoji }))) {
-					throw new Error("pi-msg could not send the reaction (no message to react to?)");
+				const args: Record<string, unknown> = { emoji };
+				if (p.messageId) {
+					args.messageId = p.messageId;
+				}
+				if (p.from) {
+					args.from = p.from;
+				}
+				if (!(await relay("react", args))) {
+					throw new Error("pi-msg could not send the reaction" + (p.messageId ? " (target message not found in history; try supplying from-JID explicitly)" : " (no message to react to?)"));
 				}
 				return {
 					content: [{ type: "text", text: `Reacted with ${emoji}.` }],
-					details: { emoji },
+					details: { emoji, ...(p.messageId ? { messageId: p.messageId } : {}) },
 				};
 			},
 		});
