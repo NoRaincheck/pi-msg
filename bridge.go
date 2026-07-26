@@ -387,7 +387,7 @@ func (b *Bridge) handleCanonical(text, origin, sender, reactTo, reactID string) 
 	// and remember where a reply (or tool-driven file) should go by default.
 	b.setReactTarget(reactTo, reactID)
 	b.setTurnDest(origin)
-	b.rpc.Prompt(b.composePrompt(t, true, "", origin, sender), b.steerBehavior())
+	b.rpc.Prompt(b.composePrompt(t, true, "", origin, sender, reactID, reactTo), b.steerBehavior())
 	// Immediate "got it, working" ack; agent_start confirms it shortly (deduped).
 	// Typing is no longer lit here — it now tracks literal text streaming.
 	b.xmpp.SetPresence("dnd", "thinking…")
@@ -403,7 +403,7 @@ func (b *Bridge) dispatchCommentary(body, nick, origin, sender, reactTo, reactID
 	}
 	b.setReactTarget(reactTo, reactID)
 	b.setTurnDest(origin)
-	b.rpc.Prompt(b.composePrompt(t, false, nick, origin, sender), b.steerBehavior())
+	b.rpc.Prompt(b.composePrompt(t, false, nick, origin, sender, reactID, reactTo), b.steerBehavior())
 	b.xmpp.SetPresence("dnd", "thinking…")
 }
 
@@ -594,7 +594,7 @@ func (b *Bridge) routingHint() string {
 // non-canonical block, and non-owner messages are wrapped as untrusted
 // commentary. origin is the channel jid (owner or room); sender is the
 // individual's real jid (room only, when known).
-func (b *Bridge) composePrompt(body string, canonical bool, nick, origin, sender string) string {
+func (b *Bridge) composePrompt(body string, canonical bool, nick, origin, sender, reactID, reactTo string) string {
 	var sb strings.Builder
 	if ambient := b.drainAmbient(); ambient != "" {
 		sb.WriteString(ambient)
@@ -606,6 +606,14 @@ func (b *Bridge) composePrompt(body string, canonical bool, nick, origin, sender
 			fmt.Fprintf(&sb, "sender: %s\n", sender)
 		}
 	}
+	// Include the stanza ID and target JID so the agent can pass them to
+	// send_reaction as messageId and from-JID respectively.
+	if reactID != "" {
+		fmt.Fprintf(&sb, "stanza-id: %s\n", reactID)
+		if reactTo != "" {
+			fmt.Fprintf(&sb, "react-to: %s\n", reactTo)
+		}
+	}
 	if canonical {
 		sb.WriteString(body)
 	} else {
@@ -615,9 +623,6 @@ func (b *Bridge) composePrompt(body string, canonical bool, nick, origin, sender
 		sb.WriteString("\n\n")
 		sb.WriteString(b.routingHint())
 	}
-	// Reactions and file sends are exposed as structured tools (send_reaction /
-	// send_file) by the companion extension, not as in-band text directives, so
-	// no prompt hint is injected for them here.
 	return sb.String()
 }
 
