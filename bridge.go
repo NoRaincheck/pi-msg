@@ -338,10 +338,20 @@ func (b *Bridge) handleRoom(m InboundMessage) {
 	action, body := b.classify(m)
 	switch action {
 	case actionCanonical:
-		// Room turn: no 1:1 reaction target (empty clears any stale one).
-		b.handleCanonical(body, m.Room, m.RealJID, "", "")
+		// Room reactions enabled → use the room JID and stanza ID so auto-reacts
+		// and send_reaction target the room message. Otherwise clear any stale
+		// 1:1 reaction target.
+		reactTo, reactID := "", ""
+		if b.acct.RoomReactions {
+			reactTo, reactID = m.Room, m.ID
+		}
+		b.handleCanonical(body, m.Room, m.RealJID, reactTo, reactID)
 	case actionCommentary:
-		b.dispatchCommentary(body, m.Nick, m.Room, m.RealJID)
+		reactTo, reactID := "", ""
+		if b.acct.RoomReactions {
+			reactTo, reactID = m.Room, m.ID
+		}
+		b.dispatchCommentary(body, m.Nick, m.Room, m.RealJID, reactTo, reactID)
 	case actionAmbient:
 		b.bufferAmbient(m.Nick, m.Body)
 	}
@@ -372,12 +382,12 @@ func (b *Bridge) handleCanonical(text, origin, sender, reactTo, reactID string) 
 // dispatchCommentary sends a non-owner addressed message as an untrusted
 // prompt. Slash-commands from non-owners are treated as literal text, never
 // control commands.
-func (b *Bridge) dispatchCommentary(body, nick, origin, sender string) {
+func (b *Bridge) dispatchCommentary(body, nick, origin, sender, reactTo, reactID string) {
 	t := strings.TrimSpace(body)
 	if t == "" {
 		return
 	}
-	b.setReactTarget("", "") // room turn: no 1:1 reaction target
+	b.setReactTarget(reactTo, reactID)
 	b.setTurnDest(origin)
 	b.rpc.Prompt(b.composePrompt(t, false, nick, origin, sender), b.steerBehavior())
 	b.xmpp.SetPresence("dnd", "thinking…")
@@ -668,7 +678,12 @@ func (b *Bridge) deliverReply(text string) {
 		// Deliberate reactions are the send_reaction tool's job now; a 1:1 reply
 		// is just its text.
 		if strings.TrimSpace(text) != "" {
-			b.xmpp.Send(text)
+			stanzaID := b.xmpp.Send(text)
+			// Update reaction target to the just-sent message so subsequent
+			// send_reaction calls target the agent's own message.
+			if stanzaID != "" {
+				b.setReactTarget(b.acct.Owner, stanzaID)
+			}
 		}
 		return
 	}
@@ -689,10 +704,20 @@ func (b *Bridge) deliverReply(text string) {
 			continue
 		}
 		if s.body != "" {
+			var stanzaID string
 			if kind == destRoom {
-				b.xmpp.SendRoomTo(bareJid(s.dest), s.body)
+				stanzaID = b.xmpp.SendRoomTo(bareJid(s.dest), s.body)
 			} else {
-				b.xmpp.SendChatTo(s.dest, s.body)
+				stanzaID = b.xmpp.SendChatTo(s.dest, s.body)
+			}
+			// Update reaction target to the last-segment message so subsequent
+			// send_reaction calls target the agent's own most recent message.
+			if stanzaID != "" {
+				dest := s.dest
+				if kind == destRoom {
+					dest = bareJid(dest)
+				}
+				b.setReactTarget(dest, stanzaID)
 			}
 		}
 	}

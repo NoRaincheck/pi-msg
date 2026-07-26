@@ -54,6 +54,10 @@ type Account struct {
 	// (aborted), and the agent may react deliberately via a "react: <emoji>"
 	// line. Off by default so it doesn't double up with read receipts + presence.
 	Reactions bool `json:"reactions,omitempty"`
+	// RoomReactions, when true, enables XEP-0444 emoji reactions on room
+	// messages (both owner and addressed non-owner commentary). Independent of
+	// the 1:1 reactions flag — you can opt into one, both, or neither.
+	RoomReactions bool `json:"roomReactions,omitempty"`
 	// Model is the model pattern to launch pi with (e.g.
 	// "anthropic/claude-sonnet-latest"). Optional.
 	Model string `json:"model,omitempty"`
@@ -104,11 +108,12 @@ type ResolvedAccount struct {
 	Owner         string
 	Service       string
 	Resource      string
-	ToolActivity  bool
-	Reactions     bool
-	Model         string
-	Workdir       string
-	Rooms         []string
+	ToolActivity   bool
+	Reactions      bool
+	RoomReactions  bool
+	Model          string
+	Workdir        string
+	Rooms          []string
 	Nick          string
 	RoomTrigger   string
 	UploadService string
@@ -260,9 +265,10 @@ func resolveAccount(cfg *Config, requested string) (ResolvedAccount, error) {
 		Owner:         acct.Owner,
 		Service:       service,
 		Resource:      resource,
-		ToolActivity:  acct.ToolActivity,
-		Reactions:     acct.Reactions,
-		Model:         acct.Model,
+		ToolActivity:   acct.ToolActivity,
+		Reactions:      acct.Reactions,
+		RoomReactions:  acct.RoomReactions,
+		Model:          acct.Model,
 		Workdir:       acct.Workdir,
 		Rooms:         rooms,
 		Nick:          nick,

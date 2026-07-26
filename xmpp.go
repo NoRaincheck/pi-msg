@@ -554,6 +554,8 @@ func (b *XMPPBridge) dispatchRoom(m incomingMsg) {
 		RealJID:   real,
 		FromOwner: real != "" && real == b.ownerBare,
 		Room:      room,
+		ID:        m.id,
+		From:      m.from,
 	})
 }
 
@@ -640,20 +642,25 @@ func (b *XMPPBridge) seenDuplicate(id string) bool {
 
 // Send delivers a chat message to the owner, splitting long text across
 // stanzas.
-func (b *XMPPBridge) Send(text string) { b.SendChatTo(b.acct.Owner, text) }
+func (b *XMPPBridge) Send(text string) string { return b.SendChatTo(b.acct.Owner, text) }
 
 // SendChatTo posts a 1:1 chat message to an arbitrary JID, splitting long text.
-func (b *XMPPBridge) SendChatTo(to, text string) {
+// Returns the stanza ID of the last chunk sent, or "" if nothing was sent.
+func (b *XMPPBridge) SendChatTo(to, text string) string {
 	if b.currentSession() == nil {
 		b.log("warning", "send skipped: not online")
-		return
+		return ""
 	}
+	var lastID string
 	for _, part := range chunk(text, maxBody) {
-		if err := b.encodeChat(to, part, stanza.ChatMessage); err != nil {
+		id, err := b.encodeChat(to, part, stanza.ChatMessage)
+		if err != nil {
 			b.log("error", "send failed: "+err.Error())
 			break
 		}
+		lastID = id
 	}
+	return lastID
 }
 
 // destKind classifies an agent-chosen reply destination for delivery policy.
@@ -755,25 +762,26 @@ func (b *XMPPBridge) currentSession() *xmpp.Session {
 
 // --- stanza encoders ---
 
-func (b *XMPPBridge) encodeChat(to, body string, typ stanza.MessageType) error {
+func (b *XMPPBridge) encodeChat(to, body string, typ stanza.MessageType) (string, error) {
 	session := b.currentSession()
 	if session == nil {
-		return fmt.Errorf("not online")
+		return "", fmt.Errorf("not online")
 	}
 	toJID, err := jid.Parse(to)
 	if err != nil {
-		return fmt.Errorf("invalid recipient %q: %w", to, err)
+		return "", fmt.Errorf("invalid recipient %q: %w", to, err)
 	}
+	id := newStanzaID()
 	msg := struct {
 		stanza.Message
 		Body string `xml:"body"`
 	}{
-		Message: stanza.Message{ID: newStanzaID(), To: toJID, Type: typ},
+		Message: stanza.Message{ID: id, To: toJID, Type: typ},
 		Body:    body,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return session.Encode(ctx, msg)
+	return id, session.Encode(ctx, msg)
 }
 
 func (b *XMPPBridge) encodeChatState(to, state string, typ stanza.MessageType) error {
@@ -866,6 +874,8 @@ func (b *XMPPBridge) SendReaction(to, forID string, emojis ...string) {
 // encodeReaction sends a bodyless message to `to` carrying an XEP-0444
 // <reactions id='forID'> element with one <reaction> child per emoji. An empty
 // emojis slice yields an empty <reactions>, which clears the reaction set.
+// When the target is a known room, the stanza is sent as groupchat so clients
+// display the reaction within the room context.
 func (b *XMPPBridge) encodeReaction(to, forID string, emojis []string) error {
 	session := b.currentSession()
 	if session == nil {
@@ -874,6 +884,10 @@ func (b *XMPPBridge) encodeReaction(to, forID string, emojis []string) error {
 	toJID, err := jid.Parse(to)
 	if err != nil {
 		return fmt.Errorf("invalid recipient %q: %w", to, err)
+	}
+	msgType := stanza.ChatMessage
+	if b.isRoomJID(to) {
+		msgType = stanza.GroupChatMessage
 	}
 	type reaction struct {
 		XMLName xml.Name `xml:"reaction"`
@@ -887,7 +901,7 @@ func (b *XMPPBridge) encodeReaction(to, forID string, emojis []string) error {
 			Reactions []reaction
 		}
 	}{
-		Message: stanza.Message{To: toJID, Type: stanza.ChatMessage},
+		Message: stanza.Message{To: toJID, Type: msgType},
 	}
 	msg.Reactions.XMLName = xml.Name{Space: reactionsNS, Local: "reactions"}
 	msg.Reactions.ID = forID
@@ -991,17 +1005,22 @@ func (b *XMPPBridge) publishAvatar() error {
 }
 
 // SendRoomTo posts a groupchat message to a room JID, splitting long text.
-func (b *XMPPBridge) SendRoomTo(room, text string) {
+// Returns the stanza ID of the last chunk sent, or "" if nothing was sent.
+func (b *XMPPBridge) SendRoomTo(room, text string) string {
 	if b.currentSession() == nil {
 		b.log("warning", "room send skipped: not online")
-		return
+		return ""
 	}
+	var lastID string
 	for _, part := range chunk(text, maxBody) {
-		if err := b.encodeChat(room, part, stanza.GroupChatMessage); err != nil {
+		id, err := b.encodeChat(room, part, stanza.GroupChatMessage)
+		if err != nil {
 			b.log("error", "room send failed: "+err.Error())
 			break
 		}
+		lastID = id
 	}
+	return lastID
 }
 
 // SendFile uploads a local file via XEP-0363 and sends its URL to `to` as an
