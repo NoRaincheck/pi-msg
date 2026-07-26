@@ -37,6 +37,9 @@ type Bridge struct {
 	reactID        string // stanza id of that message (XEP-0444 target); "" disables
 	turnDest       string // reply destination for the current turn (owner or room jid)
 
+	lifecycleReactTo  string // snapshot of reactTo at run start, for lifecycle auto-reacts
+	lifecycleReactID  string // snapshot of reactID at run start; never overwritten by deliverReply
+
 	typingMu   sync.Mutex
 	typingStop chan struct{}
 
@@ -386,7 +389,7 @@ func (b *Bridge) handleCanonical(text, origin, sender, reactTo, reactID string) 
 	}
 	// A real prompt: point lifecycle/agent reactions at the message that drove it,
 	// and remember where a reply (or tool-driven file) should go by default.
-	b.setReactTarget(reactTo, reactID)
+	b.setLifecycleReactTarget(reactTo, reactID)
 	b.setTurnDest(origin)
 	b.rpc.Prompt(b.composePrompt(t, true, "", origin, sender, reactID, reactTo), b.steerBehavior())
 	// Immediate "got it, working" ack; agent_start confirms it shortly (deduped).
@@ -402,7 +405,7 @@ func (b *Bridge) dispatchCommentary(body, nick, origin, sender, reactTo, reactID
 	if t == "" {
 		return
 	}
-	b.setReactTarget(reactTo, reactID)
+	b.setLifecycleReactTarget(reactTo, reactID)
 	b.setTurnDest(origin)
 	b.rpc.Prompt(b.composePrompt(t, false, nick, origin, sender, reactID, reactTo), b.steerBehavior())
 	b.xmpp.SetPresence("dnd", "thinking…")
@@ -1006,13 +1009,23 @@ func (b *Bridge) settleLocally() {
 
 // --- small state accessors ---
 
-// setReactTarget records which owner message the next run's reactions attach
-// to. Called before each prompt: a 1:1 owner turn passes its full JID + stanza
-// id; a room turn passes "" to clear any stale 1:1 target so a room-triggered
-// run never reacts to an old DM.
+// setReactTarget records which message the next run's agent-driven reactions
+// (send_reaction tool) attach to. Called before each prompt and updated by
+// deliverReply so agent reactions target its own outgoing messages.
 func (b *Bridge) setReactTarget(to, id string) {
 	b.mu.Lock()
 	b.reactTo, b.reactID = to, id
+	b.mu.Unlock()
+}
+
+// setLifecycleReactTarget records both the regular react target AND a
+// snapshot for lifecycle auto-reacts (👀✅⛔). The lifecycle snapshot is never
+// overwritten by deliverReply, so agent_settled's ✅ always targets the
+// original triggering message.
+func (b *Bridge) setLifecycleReactTarget(to, id string) {
+	b.mu.Lock()
+	b.reactTo, b.reactID = to, id
+	b.lifecycleReactTo, b.lifecycleReactID = to, id
 	b.mu.Unlock()
 }
 
@@ -1053,7 +1066,13 @@ func (b *Bridge) lifecycleReact(emojis ...string) {
 	if !b.acct.Reactions {
 		return
 	}
-	b.sendReaction(emojis...)
+	b.mu.Lock()
+	to, id := b.lifecycleReactTo, b.lifecycleReactID
+	b.mu.Unlock()
+	if to == "" || id == "" {
+		return
+	}
+	b.xmpp.SendReaction(to, id, emojis...)
 }
 
 func (b *Bridge) setStreaming(v bool) { b.mu.Lock(); b.streamingRun = v; b.mu.Unlock() }
