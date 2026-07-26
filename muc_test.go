@@ -101,7 +101,7 @@ func TestComposePrompt(t *testing.T) {
 
 	// Owner DM turn: "from:" is the owner, body follows directly (no sender
 	// line), hint appended.
-	got := b.composePrompt("hello", true, "", "zach@x.com", "")
+	got := b.composePrompt("hello", true, "", "zach@x.com", "", "", "")
 	if !strings.HasPrefix(got, "from: zach@x.com\nhello") {
 		t.Errorf("dm header wrong: %q", got)
 	}
@@ -110,7 +110,7 @@ func TestComposePrompt(t *testing.T) {
 	}
 
 	// Room turn from the owner: from: is the room, sender: is the owner's jid.
-	got = b.composePrompt("hi", true, "", "team@muc.x.com", "zach@x.com")
+	got = b.composePrompt("hi", true, "", "team@muc.x.com", "zach@x.com", "", "")
 	if !strings.Contains(got, "from: team@muc.x.com\n") || !strings.Contains(got, "sender: zach@x.com\n") {
 		t.Errorf("room header wrong: %q", got)
 	}
@@ -119,7 +119,7 @@ func TestComposePrompt(t *testing.T) {
 	}
 
 	// Commentary: wrapped as untrusted, includes nick + sender header.
-	got = b.composePrompt("help", false, "alice", "team@muc.x.com", "alice@x.com")
+	got = b.composePrompt("help", false, "alice", "team@muc.x.com", "alice@x.com", "", "")
 	if !strings.Contains(got, "NON-OWNER") || !strings.Contains(got, "alice") ||
 		!strings.Contains(got, "help") || !strings.Contains(got, "sender: alice@x.com") {
 		t.Errorf("commentary framing wrong: %q", got)
@@ -127,7 +127,7 @@ func TestComposePrompt(t *testing.T) {
 
 	// Ambient is prepended; the hint is still last.
 	b.bufferAmbient("bob", "fyi")
-	got = b.composePrompt("do it", true, "", "team@muc.x.com", "zach@x.com")
+	got = b.composePrompt("do it", true, "", "team@muc.x.com", "zach@x.com", "", "")
 	if !strings.Contains(got, "room commentary") || !strings.Contains(got, "do it") || !strings.HasSuffix(got, hint) {
 		t.Errorf("canonical+ambient wrong: %q", got)
 	}
