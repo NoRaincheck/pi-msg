@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -571,7 +572,11 @@ func contentText(content any) string {
 			case "thinking":
 				parts = append(parts, "💭")
 			case "toolCall":
-				parts = append(parts, "⚙ "+e.Str("toolName"))
+				detail := "⚙ " + e.Str("toolName")
+				if args := e.Obj("args"); args != nil {
+					detail += " " + compactArgs(args)
+				}
+				parts = append(parts, detail)
 			default:
 				parts = append(parts, "["+e.Str("type")+"]")
 			}
@@ -582,10 +587,35 @@ func contentText(content any) string {
 	}
 }
 
+// compactArgs renders a tool-call arg map as a compact one-liner: key1=val1 key2=val2
+// Values are collapsed: strings in full, numbers as-is, booleans as true/false,
+// nested objects/arrays as [...] placeholder.
+func compactArgs(args Event) string {
+	var pairs []string
+	for k, v := range args {
+		switch val := v.(type) {
+		case string:
+			val = strings.Join(strings.Fields(val), " ")
+			if len(val) > 40 {
+				val = val[:37] + "…"
+			}
+			pairs = append(pairs, k+"="+val)
+		case float64:
+			pairs = append(pairs, k+"="+strconv.FormatFloat(val, 'f', -1, 64))
+		case bool:
+			pairs = append(pairs, k+"="+strconv.FormatBool(val))
+		default:
+			pairs = append(pairs, k+"=[…]")
+		}
+	}
+	sort.Strings(pairs)
+	return strings.Join(pairs, " ")
+}
+
 // routingHint tells the agent, when the account has room access, that every
 // reply must begin with an explicit "to: <jid>" line, and how to choose it.
 func (b *Bridge) routingHint() string {
-	return fmt.Sprintf("[routing: you have group-chat access, so EVERY reply MUST begin with a line \"to: <jid>\" naming the destination. To reply where this message came from, use the \"from:\" jid above; to DM the person who sent it, use their \"sender:\" jid (if shown); to reach your owner, use to: %s. You may include several \"to: <jid>\" blocks in one reply to send different parts to different destinations — each \"to:\" line starts a new message. Any text with no valid \"to:\" line is sent to the owner.]", b.acct.Owner)
+	return fmt.Sprintf("[routing: you have group-chat access, so EVERY reply MUST begin with a line \"to: <jid>\" naming the destination. To reply where this message came from, use the \"from:\" jid above; to DM the person who sent it, use their \"sender:\" jid (if shown); to reach your owner, use to: %s. You may include several \"to: <jid>\" blocks in one reply to send different parts to different destinations — each \"to:\" line starts a new message.]", b.acct.Owner)
 }
 
 // composePrompt assembles the text sent to pi. When the account has room
