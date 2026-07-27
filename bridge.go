@@ -195,7 +195,7 @@ func (b *Bridge) handleRPCEvent(ev Event) {
 		if msg == nil || msg.Str("role") != "assistant" {
 			return
 		}
-		if text := extractText(msg["content"]); text != "" {
+		if text := FixToolCallXML(extractText(msg["content"])); text != "" {
 			b.deliverReply(text)
 			b.setReplied(true)
 		}
