@@ -477,7 +477,18 @@ func (b *Bridge) dumpSession(arg string) {
 	}
 	if strings.EqualFold(strings.TrimSpace(arg), "pretty") {
 		b.reply(fmt.Sprintf("📄 session dump (pretty) — %s", path))
-		b.reply(prettyDump(raw))
+		pretty := prettyDump(raw)
+		// When the dump is too large to fit in one message, the transport
+		// splits it at newline/word boundaries — which can split the code fence
+		// markers, breaking markdown rendering on the receiving client.  Split
+		// into multiple self-contained code blocks instead.
+		if len(pretty) <= maxBody {
+			b.reply(pretty)
+		} else {
+			for _, chunk := range splitPrettyDump(pretty) {
+				b.reply(chunk)
+			}
+		}
 		return
 	}
 	b.reply(fmt.Sprintf("📄 raw session dump — %s (%d bytes)", path, len(raw)))
@@ -522,6 +533,60 @@ func prettyDump(raw []byte) string {
 	}
 	sb.WriteString("```")
 	return sb.String()
+}
+
+// splitPrettyDump splits a code-fenced pretty table into multiple
+// self-contained code blocks, each small enough to fit in one message.
+func splitPrettyDump(dump string) []string {
+	// Strip the outer ``` fences
+	body := strings.TrimPrefix(dump, "```\n")
+	body = strings.TrimSuffix(body, "\n```")
+	lines := strings.Split(body, "\n")
+	if len(lines) < 2 {
+		return []string{dump}
+	}
+	header := lines[0] // "  #  TIME  KIND  DETAIL"
+	rows := lines[1:]
+
+	// Reserve ~100 bytes per chunk for fence + header overhead
+	const overhead = 100
+	var chunks []string
+	start := 0
+	for i := 0; i <= len(rows); i++ {
+		size := 0
+		for j := start; j < i && j < len(rows); j++ {
+			size += len(rows[j]) + 1
+		}
+		if size+overhead > maxBody && i > start {
+			// Emit chunk [start, i)
+			var sb strings.Builder
+			sb.WriteString("```\n")
+			sb.WriteString(header)
+			sb.WriteByte('\n')
+			for _, r := range rows[start:i] {
+				sb.WriteString(r)
+				sb.WriteByte('\n')
+			}
+			sb.WriteString("```")
+			chunks = append(chunks, sb.String())
+			start = i
+		}
+		_ = size
+	}
+	// Remaining rows
+	if start < len(rows) {
+		var sb strings.Builder
+		sb.WriteString("```\n")
+		sb.WriteString(header)
+		sb.WriteByte('\n')
+		for _, r := range rows[start:] {
+			sb.WriteString(r)
+			sb.WriteByte('\n')
+		}
+		sb.WriteString("```")
+		chunks = append(chunks, sb.String())
+	}
+	return chunks
 }
 
 // recordRow summarizes one session JSONL record into (time, kind, detail) for
