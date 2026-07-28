@@ -43,6 +43,19 @@ export default function xmppTools(pi: ExtensionAPI) {
 		ui = ctx.ui as unknown as ConfirmUI;
 	});
 
+	// Inject the agent's identity ($PI_MSG_ACCOUNT) at the top of every system
+	// prompt so it's the first thing the agent reads. Prevents identity confusion
+	// in multi-persona fleets where several agents share the same project context.
+	pi.on("before_agent_start", async (event) => {
+		const account = process.env.PI_MSG_ACCOUNT;
+		if (!account) return;
+		return {
+			systemPrompt: `You are **${account}**. This is your identity in Zach\'s fleet.
+
+${event.systemPrompt}`,
+		};
+	});
+
 	// Which tools to register, chosen by pi-msg via PI_MSG_TOOLS (comma list).
 	// Unset (e.g. running the extension standalone) enables both.
 	const raw = process.env.PI_MSG_TOOLS;
