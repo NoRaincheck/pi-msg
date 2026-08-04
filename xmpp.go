@@ -1073,10 +1073,22 @@ func (b *XMPPBridge) publishAvatar() error {
 	if err != nil {
 		return err
 	}
-	err = session.UnmarshalIQ(ctx, resp, nil)
+	// Manually check the IQ response for errors instead of using
+	// session.UnmarshalIQ with nil — the mellium library panics on nil
+	// interface type assertions when the server responds with an error.
+	tok, err := resp.Token()
+	if err != nil {
+		return err
+	}
+	start, ok := tok.(xml.StartElement)
+	if !ok {
+		return fmt.Errorf("publish avatar: expected IQ start element")
+	}
+	_, err = stanza.UnmarshalIQError(resp, start)
 	if err != nil {
 		return fmt.Errorf("publish avatar: %w", err)
 	}
+	resp.Close()
 	return nil
 }
 
