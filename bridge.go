@@ -850,7 +850,7 @@ const maxRoutingNudges = 2
 // line. The nudge is a steering message, so it isn't confused for a real user.
 func (b *Bridge) rejectReply(body, reason string) {
 	b.log("warning", "agent reply not routed: "+reason)
-	b.xmpp.Send(fmt.Sprintf("⚠️ an agent reply was malformed (%s) and dropped before reaching its destination. Raw text:\n\n%s", reason, body))
+	b.xmpp.Send(fmt.Sprintf("⚠️ malformed message: %s\n\n%s", reason, body))
 	if b.bumpRoutingNudge() {
 		b.rpc.Prompt(fmt.Sprintf("Your previous message was NOT delivered to anyone in the chat: %s. Every reply MUST begin with a line \"to: <jid>\" naming the destination (e.g. \"to: %s\" for the owner, or a room/person jid). Resend your message now with a valid \"to:\" line.", reason, b.acct.Owner), b.steerBehavior())
 	}
