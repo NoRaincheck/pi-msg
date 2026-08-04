@@ -1069,11 +1069,11 @@ func (b *XMPPBridge) publishAvatar() error {
 	iq.VCard.Photo.BinVal = b.avatarB64
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	resp, err := session.EncodeIQ(ctx, iq)
+	err := session.UnmarshalIQ(ctx, iq, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("publish avatar: %w", err)
 	}
-	return resp.Close()
+	return nil
 }
 
 // SendRoomTo posts a groupchat message to a room JID, splitting long text.
