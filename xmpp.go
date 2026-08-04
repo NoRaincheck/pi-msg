@@ -1069,7 +1069,11 @@ func (b *XMPPBridge) publishAvatar() error {
 	iq.VCard.Photo.BinVal = b.avatarB64
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	err := session.UnmarshalIQ(ctx, iq, nil)
+	resp, err := session.EncodeIQ(ctx, iq)
+	if err != nil {
+		return err
+	}
+	err = session.UnmarshalIQ(ctx, resp, nil)
 	if err != nil {
 		return fmt.Errorf("publish avatar: %w", err)
 	}
