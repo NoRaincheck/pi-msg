@@ -997,11 +997,11 @@ func toolLabel(ev Event) string {
 	if name == "bash" {
 		if args := ev.Obj("args"); args != nil {
 			if cmd := strings.TrimSpace(args.Str("command")); cmd != "" {
-				return "running: " + truncateLabel(cmd, 40)
+				return "! " + truncateLabel(cmd, 80)
 			}
 		}
 	}
-	return "running " + name
+	return "! " + name
 }
 
 // truncateLabel collapses newlines and rune-safely caps s to max characters for
