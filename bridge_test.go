@@ -66,11 +66,11 @@ func TestToolLabel(t *testing.T) {
 		ev   Event
 		want string
 	}{
-		{"bash with command", Event{"toolName": "bash", "args": map[string]any{"command": "npm test"}}, "running: npm test"},
-		{"bash collapses whitespace", Event{"toolName": "bash", "args": map[string]any{"command": "go  build\n./..."}}, "running: go build ./..."},
-		{"non-bash tool", Event{"toolName": "read_file"}, "running read_file"},
+		{"bash with command", Event{"toolName": "bash", "args": map[string]any{"command": "npm test"}}, "! npm test"},
+		{"bash collapses whitespace", Event{"toolName": "bash", "args": map[string]any{"command": "go  build\n./..."}}, "! go build ./..."},
+		{"non-bash tool", Event{"toolName": "read_file"}, "! read_file"},
 		{"missing name", Event{}, "running a tool…"},
-		{"bash no command", Event{"toolName": "bash"}, "running bash"},
+		{"bash no command", Event{"toolName": "bash"}, "! bash"},
 	}
 	for _, c := range cases {
 		if got := toolLabel(c.ev); got != c.want {
