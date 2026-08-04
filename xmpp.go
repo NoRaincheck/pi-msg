@@ -1064,7 +1064,13 @@ func (b *XMPPBridge) publishAvatar() error {
 				BinVal  string   `xml:"BINVAL"`
 			}
 		}
-	}{IQ: stanza.IQ{Type: stanza.SetIQ}}
+		// jid.JID implements xml.MarshalerAttr, so encoding/xml's `omitempty`
+		// on stanza.IQ.To never applies (isEmptyValue doesn't special-case
+		// structs) — a zero-value To always marshals to `to=""`, which
+		// ejabberd rejects as "Bad value of attribute 'to'". Set it to our
+		// own bare JID (the standard self-addressed form for vcard-temp) so
+		// the attribute is always well-formed.
+	}{IQ: stanza.IQ{Type: stanza.SetIQ, To: session.LocalAddr().Bare()}}
 	iq.VCard.Photo.Type = b.avatarType
 	iq.VCard.Photo.BinVal = b.avatarB64
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
