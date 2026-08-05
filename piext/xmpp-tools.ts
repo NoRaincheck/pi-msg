@@ -108,5 +108,6 @@ ${event.systemPrompt}`,
 			},
 		});
 	}
+}
 
 

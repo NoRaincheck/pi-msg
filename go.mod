@@ -4,10 +4,14 @@ go 1.26.4
 
 require (
 	github.com/grandcat/zeroconf v1.0.0
-	mellium.im/sasl v0.3.2
 	mellium.im/xmlstream v0.15.4
 	mellium.im/xmpp v0.23.0
 )
+
+// grandcat/zeroconf is unmaintained and leaves the hostname without a trailing
+// dot when it already ends with the domain (e.g. macOS "mbpro.local"), so
+// miekg/dns rejects every probe/announcement. We vendor a patched copy.
+replace github.com/grandcat/zeroconf => ./third_party/grandcat/zeroconf
 
 require (
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
@@ -20,4 +24,5 @@ require (
 	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/tools v0.42.0 // indirect
 	mellium.im/reader v0.1.0 // indirect
+	mellium.im/sasl v0.3.2 // indirect
 )
