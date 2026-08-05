@@ -1,14 +1,11 @@
 package main
 
 import (
-	"encoding/xml"
 	"net"
 	"strings"
 	"testing"
 
 	"github.com/grandcat/zeroconf"
-	"mellium.im/xmlstream"
-	"mellium.im/xmpp/stanza"
 )
 
 func TestDialAddr(t *testing.T) {
@@ -106,30 +103,73 @@ func TestUnescapeInstance(t *testing.T) {
 	}
 }
 
-func TestBindNoAuthRequestXML(t *testing.T) {
-	req := &bindIQ{
-		IQ:   stanza.IQ{XMLName: xml.Name{Space: stanza.NSClient, Local: "iq"}, ID: "req-1", Type: stanza.SetIQ},
-		Bind: bindPayload{Resource: "pi-msg"},
+func TestEscapeInstance(t *testing.T) {
+	cases := map[string]string{
+		"pi@mbpro":  `pi\@mbpro`,
+		"crn@mbpro": `crn\@mbpro`,
+		"a@b.c/d":   `a\@b\.c/d`,
+		`x@y:z,w`:   `x\@y:z\,w`,
+		`a\@b`:      `a\\\@b`,
+		"plain":     "plain",
 	}
-	var buf strings.Builder
-	enc := xml.NewEncoder(&buf)
-	if _, err := xmlstream.Copy(enc, req.TokenReader()); err != nil {
-		t.Fatalf("copy: %v", err)
-	}
-	enc.Flush()
-	got := buf.String()
-	for _, want := range []string{
-		`<iq`,
-		`xmlns="` + stanza.NSClient + `"`,
-		`id="req-1"`,
-		`type="set"`,
-		`<bind xmlns="` + bindNS + `"`,
-		`<resource>pi-msg</resource>`,
-		`</bind>`,
-		`</iq>`,
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("bind IQ = %q, missing %q", got, want)
+	for in, want := range cases {
+		if got := escapeInstance(in); got != want {
+			t.Errorf("escapeInstance(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestMatchesInstance(t *testing.T) {
+	entry := func(instance string) *zeroconf.ServiceEntry {
+		return &zeroconf.ServiceEntry{ServiceRecord: zeroconf.ServiceRecord{Instance: instance}}
+	}
+	cases := []struct {
+		instance, target, filter string
+		want                     bool
+	}{
+		{`pi\@mbpro`, "pi@mbpro", "", true},
+		{`Pi\@MBPRO`, "pi@mbpro", "", true},
+		{`pi\@mbpro`, "pi@mbpro", "pi", true},
+		{`pi\@mbpro`, "", "mbpro", true},
+		{`pi\@mbpro`, "zach@mbpro", "", false},
+		{`pi\@macbook`, "pi@mbpro", "", false},
+		{`pi\@mbpro`, "pi@mbpro", "macbook", false},
+	}
+	for _, c := range cases {
+		got := matchesInstance(entry(c.instance), c.target, c.filter)
+		if got != c.want {
+			t.Errorf("matchesInstance(%q, %q, %q) = %v, want %v", c.instance, c.target, c.filter, got, c.want)
+		}
+	}
+}
+
+func TestTxtPort(t *testing.T) {
+	// XEP-0174: a "port=" TXT key overrides the SRV record's port.
+	if p, ok := txtPort([]string{"txtvers=1", "port=5298", "status=avail"}); !ok || p != 5298 {
+		t.Errorf("txtPort with port key = (%d, %v), want (5298, true)", p, ok)
+	}
+	// Missing key → not ok, caller falls back to the SRV port.
+	if _, ok := txtPort([]string{"txtvers=1", "status=avail"}); ok {
+		t.Error("txtPort without port key should report not-found")
+	}
+	// Garbage port value → not ok.
+	if _, ok := txtPort([]string{"port=notaport"}); ok {
+		t.Error("txtPort with garbage port should report not-found")
+	}
+	// Zero / negative port → not ok.
+	if _, ok := txtPort([]string{"port=0"}); ok {
+		t.Error("txtPort with port=0 should report not-found")
+	}
+}
+
+func TestEndpointForPrefersTxtPort(t *testing.T) {
+	src := &zeroconf.ServiceEntry{
+		HostName: "mymac.local.",
+		Port:     5222,
+		Text:     []string{"txtvers=1", "port=5298"},
+	}
+	e := endpointFor(src)
+	if e.Port != 5298 {
+		t.Errorf("endpointFor port = %d, want 5298 (TXT override)", e.Port)
 	}
 }

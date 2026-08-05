@@ -88,6 +88,14 @@ func unescapeInstance(name string) string {
 	return strings.ReplaceAll(name, `\@`, "@")
 }
 
+// escapeInstance escapes the special characters DNS-SD forbids in a service
+// instance name, so the JID "pi@mbpro" is advertised as "pi\@mbpro" and
+// round-trips through a peer's mDNS parser.
+func escapeInstance(name string) string {
+	r := strings.NewReplacer(`@`, `\@`, `.`, `\.`, `,`, `\,`, `"`, `\"`, `\`, `\\`)
+	return r.Replace(name)
+}
+
 func run() error {
 	cfg, err := loadConfig(configPath())
 	if err != nil {

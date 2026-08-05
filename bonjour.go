@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/grandcat/zeroconf"
 )
 
-// bonjourEndpoint is a local XMPP server discovered via Bonjour (mDNS/DNS-SD).
+// bonjourEndpoint is a local Bonjour IM peer (XEP-0174 serverless messaging)
+// discovered via mDNS/DNS-SD.
 type bonjourEndpoint struct {
 	Host     string // hostname, e.g. "MyMac.local."
 	Port     int
@@ -21,44 +23,38 @@ type bonjourEndpoint struct {
 	AddrIPv6 []net.IP
 }
 
-// bonjourServiceTypes is the DNS-SD service types browsed, in order, to find a
-// local XMPP service: the Bonjour IM / serverless-messaging type (_presence._tcp,
-// used by Adium and Messages), then the modern client-server _xmpp-client._tcp,
-// then the legacy _jabber._tcp.
-var bonjourServiceTypes = []string{"_presence._tcp", "_xmpp-client._tcp", "_jabber._tcp"}
+// serverlessPort is the default port for XEP-0174 serverless messaging. It is
+// used when neither the SRV record nor the TXT "port=" key specifies one.
+const serverlessPort = 5298
+
+// bonjourServiceTypes is the DNS-SD service type browsed to find a Bonjour IM
+// peer: _presence._tcp, the serverless-messaging type used by Adium and
+// Messages, where each online user advertises an instance like "you@my-mac".
+// XEP-0174 has no other type.
+var bonjourServiceTypes = []string{"_presence._tcp"}
 
 // bonjourSettle is how long to collect announcements after the first one, so a
 // fully-resolved record is preferred over a partial one.
 const bonjourSettle = 2 * time.Second
 
-// bonjourEmptyProbe bounds how long a service type with no matching server is
-// probed before moving on, so an absent type doesn't stall discovery.
-const bonjourEmptyProbe = 3 * time.Second
-
-// discoverBonjour browses Bonjour for a local XMPP service, trying each service
-// type in bonjourServiceTypes (or just service when set) until one responds,
-// and returns the first matching endpoint. nameFilter, when non-empty, narrows
-// the search to service instances whose name contains it.
-func discoverBonjour(ctx context.Context, service, nameFilter string, timeout time.Duration) (*bonjourEndpoint, error) {
+// discoverBonjour browses Bonjour for the Bonjour IM instance belonging to
+// target (a bare JID, e.g. "you@mbpro") and returns its endpoint, trying each
+// service type in bonjourServiceTypes (or just service when set) until one
+// responds. nameFilter, when non-empty, further narrows the search to service
+// instances whose name contains it.
+func discoverBonjour(ctx context.Context, service, target, nameFilter string, timeout time.Duration) (*bonjourEndpoint, error) {
 	services := bonjourServiceTypes
 	if strings.TrimSpace(service) != "" {
 		services = []string{strings.TrimSpace(service)}
 	}
-	probe := timeout
-	for i, svc := range services {
-		// Probe the (first) configured type for the full timeout; later types
-		// only briefly, so an empty type (e.g. no _xmpp-client server, only
-		// Bonjour IM) is skipped without stalling the whole discovery.
-		if i > 0 && probe > bonjourEmptyProbe {
-			probe = bonjourEmptyProbe
-		}
-		if e, err := browseBonjour(ctx, svc, nameFilter, probe); err == nil {
+	for _, svc := range services {
+		if e, err := browseBonjour(ctx, svc, target, nameFilter, timeout); err == nil {
 			return e, nil
 		} else if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 	}
-	return nil, fmt.Errorf("no local XMPP service found via Bonjour (mDNS) within %s", timeout)
+	return nil, fmt.Errorf("no Bonjour IM user matching %q found via mDNS within %s", target, timeout)
 }
 
 // bonjourInstance is one discovered Bonjour service instance; in serverless
@@ -122,8 +118,10 @@ done:
 	return out, nil
 }
 
-// browseBonjour runs one DNS-SD browse for svc and returns a resolved endpoint.
-func browseBonjour(ctx context.Context, svc, nameFilter string, timeout time.Duration) (*bonjourEndpoint, error) {
+// browseBonjour runs one DNS-SD browse for svc and returns a resolved endpoint
+// for the instance matching target (a bare JID), or any instance when target is
+// empty (used by --discover).
+func browseBonjour(ctx context.Context, svc, target, nameFilter string, timeout time.Duration) (*bonjourEndpoint, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	resolver, err := zeroconf.NewResolver(nil)
@@ -135,6 +133,7 @@ func browseBonjour(ctx context.Context, svc, nameFilter string, timeout time.Dur
 		return nil, err
 	}
 
+	target = strings.ToLower(strings.TrimSpace(target))
 	var (
 		best  *zeroconf.ServiceEntry
 		timer *time.Timer
@@ -150,9 +149,9 @@ func browseBonjour(ctx context.Context, svc, nameFilter string, timeout time.Dur
 				if best != nil {
 					return endpointFor(best), nil
 				}
-				return nil, errors.New("browse ended before a server was found")
+				return nil, errors.New("browse ended before a matching instance was found")
 			}
-			if e == nil || (nameFilter != "" && !strings.Contains(unescapeInstance(e.Instance), nameFilter)) {
+			if e == nil || !matchesInstance(e, target, nameFilter) {
 				continue
 			}
 			if best == nil || endpointScore(e) > endpointScore(best) {
@@ -180,15 +179,53 @@ func browseBonjour(ctx context.Context, svc, nameFilter string, timeout time.Dur
 	}
 }
 
-// endpointFor reduces a browse result to the fields the bridge needs.
+// matchesInstance reports whether a browse entry belongs to the target JID (a
+// bare JID, matched case-insensitively against the unescaped instance name)
+// and, when nameFilter is set, also contains it.
+func matchesInstance(e *zeroconf.ServiceEntry, target, nameFilter string) bool {
+	name := strings.ToLower(unescapeInstance(e.Instance))
+	if target != "" && name != target {
+		return false
+	}
+	if nameFilter != "" && !strings.Contains(name, strings.ToLower(nameFilter)) {
+		return false
+	}
+	return true
+}
+
+// endpointFor reduces a browse result to the fields the bridge needs. The
+// port comes from the TXT "port=" key when present (XEP-0174 §4.2), else the
+// SRV record, else the XEP-0174 default.
 func endpointFor(e *zeroconf.ServiceEntry) *bonjourEndpoint {
+	port := e.Port
+	if p, ok := txtPort(e.Text); ok {
+		port = p
+	}
+	if port == 0 {
+		port = serverlessPort
+	}
 	return &bonjourEndpoint{
 		Host:     e.HostName,
-		Port:     e.Port,
+		Port:     port,
 		TXT:      append([]string(nil), e.Text...),
 		AddrIPv4: append([]net.IP(nil), e.AddrIPv4...),
 		AddrIPv6: append([]net.IP(nil), e.AddrIPv6...),
 	}
+}
+
+// txtPort returns the value of the "port=" key in a DNS-SD TXT record
+// (XEP-0174 §4.2) and whether it was present and valid.
+func txtPort(txt []string) (int, bool) {
+	for _, kv := range txt {
+		k, v, ok := strings.Cut(kv, "=")
+		if ok && strings.EqualFold(strings.TrimSpace(k), "port") {
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+				return n, true
+			}
+			return 0, false
+		}
+	}
+	return 0, false
 }
 
 // endpointScore ranks a browse result so a fully-resolved record (carrying an

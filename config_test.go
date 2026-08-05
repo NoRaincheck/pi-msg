@@ -36,17 +36,11 @@ func TestResolveAccountDefaults(t *testing.T) {
 	if got.DiscoverTimeout != 10*time.Second {
 		t.Errorf("DiscoverTimeout = %s, want 10s", got.DiscoverTimeout)
 	}
-	if got.Resource != "pi-msg" {
-		t.Errorf("Resource = %q, want pi-msg", got.Resource)
+	if got.JID != "pi@mymac.local" || got.Owner != "zach@mymac.local" {
+		t.Errorf("JID/Owner = %q/%q, want pi@mymac.local/zach@mymac.local", got.JID, got.Owner)
 	}
-	if got.Nick != "pi" {
-		t.Errorf("Nick = %q, want pi", got.Nick)
-	}
-	if got.RoomTrigger != "pi" {
-		t.Errorf("RoomTrigger = %q, want pi", got.RoomTrigger)
-	}
-	if got.RoomMode() {
-		t.Error("RoomMode() = true, want false (no room set)")
+	if got.Avatar != "" {
+		t.Errorf("Avatar = %q, want empty", got.Avatar)
 	}
 }
 
@@ -74,67 +68,6 @@ func TestResolveAccountBonjourOptions(t *testing.T) {
 		"default": {JID: "a@x.local", Owner: "o@x.local", DiscoverTimeout: "soon"},
 	}}, ""); err == nil {
 		t.Error("expected error for invalid discoverTimeout, got nil")
-	}
-}
-
-func TestResolveAccountRoomMode(t *testing.T) {
-	cfg := &Config{Accounts: map[string]Account{
-		"default": {
-			JID: "pi@chat.example.com", Owner: "zach@chat.example.com",
-			Room: roomList{"team@muc.chat.example.com"}, Nick: "botpi",
-		},
-	}}
-	got, err := resolveAccount(cfg, "")
-	if err != nil {
-		t.Fatalf("resolveAccount: %v", err)
-	}
-	if !got.RoomMode() {
-		t.Error("RoomMode() = false, want true")
-	}
-	if len(got.Rooms) != 1 || got.Rooms[0] != "team@muc.chat.example.com" {
-		t.Errorf("Rooms = %v, want [team@muc.chat.example.com]", got.Rooms)
-	}
-	if got.Nick != "botpi" {
-		t.Errorf("Nick = %q, want botpi", got.Nick)
-	}
-	if got.RoomTrigger != "botpi" {
-		t.Errorf("RoomTrigger defaults to Nick: got %q, want botpi", got.RoomTrigger)
-	}
-}
-
-func TestResolveAccountPingInterval(t *testing.T) {
-	base := func(pi string) *Config {
-		return &Config{Accounts: map[string]Account{
-			"default": {JID: "a@x.local", Owner: "o@x.local", PingInterval: pi},
-		}}
-	}
-	// Unset → default cadence.
-	got, err := resolveAccount(base(""), "")
-	if err != nil {
-		t.Fatalf("resolveAccount: %v", err)
-	}
-	if got.PingInterval != defaultPingInterval {
-		t.Errorf("default PingInterval = %s, want %s", got.PingInterval, defaultPingInterval)
-	}
-	// Explicit duration string is parsed.
-	got, err = resolveAccount(base("2m"), "")
-	if err != nil {
-		t.Fatalf("resolveAccount: %v", err)
-	}
-	if got.PingInterval != 2*time.Minute {
-		t.Errorf("PingInterval = %s, want 2m", got.PingInterval)
-	}
-	// "0" disables keepalive.
-	got, err = resolveAccount(base("0"), "")
-	if err != nil {
-		t.Fatalf("resolveAccount: %v", err)
-	}
-	if got.PingInterval != 0 {
-		t.Errorf("PingInterval = %s, want 0", got.PingInterval)
-	}
-	// Garbage is a config error.
-	if _, err := resolveAccount(base("soon"), ""); err == nil {
-		t.Error("expected error for invalid pingInterval, got nil")
 	}
 }
 
@@ -189,32 +122,22 @@ func TestLoadConfigRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRoomConfigParsing(t *testing.T) {
-	// "room" accepts a single string...
-	var single Config
-	if err := json.Unmarshal([]byte(`{"accounts":{"default":{"room":"a@muc.x"}}}`), &single); err != nil {
-		t.Fatalf("string form: %v", err)
+func TestOldServerOnlyKeysIgnored(t *testing.T) {
+	// Pre-existing configs with server-only keys (room, resource,
+	// pingInterval, …) must keep loading — the decoder ignores unknown keys.
+	var cfg Config
+	raw := `{"accounts":{"default":{
+		"jid":"pi@x.local","owner":"o@x.local",
+		"room":"team@muc.x","resource":"pi-msg","nick":"pi","pingInterval":"2m"
+	}}}`
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal with server-only keys: %v", err)
 	}
-	if got := []string(single.Accounts["default"].Room); len(got) != 1 || got[0] != "a@muc.x" {
-		t.Errorf("string form Room = %v, want [a@muc.x]", got)
-	}
-	// ...or an array of strings.
-	var multi Config
-	if err := json.Unmarshal([]byte(`{"accounts":{"default":{"room":["a@muc.x","b@muc.x"]}}}`), &multi); err != nil {
-		t.Fatalf("array form: %v", err)
-	}
-	if got := []string(multi.Accounts["default"].Room); len(got) != 2 || got[1] != "b@muc.x" {
-		t.Errorf("array form Room = %v, want [a@muc.x b@muc.x]", got)
-	}
-	// resolveAccount dedupes/cleans and drives RoomMode + multiple Rooms.
-	got, err := resolveAccount(&Config{Accounts: map[string]Account{
-		"default": {JID: "pi@x.local", Owner: "o@x.local",
-			Room: roomList{"a@muc.x", " a@muc.x ", "b@muc.x", ""}},
-	}}, "")
+	got, err := resolveAccount(&cfg, "")
 	if err != nil {
-		t.Fatalf("resolveAccount: %v", err)
+		t.Fatalf("resolveAccount with server-only keys: %v", err)
 	}
-	if len(got.Rooms) != 2 || got.Rooms[0] != "a@muc.x" || got.Rooms[1] != "b@muc.x" {
-		t.Errorf("resolved Rooms = %v, want [a@muc.x b@muc.x]", got.Rooms)
+	if got.JID != "pi@x.local" || got.Owner != "o@x.local" {
+		t.Errorf("resolved JID/Owner = %q/%q, want pi@x.local/o@x.local", got.JID, got.Owner)
 	}
 }

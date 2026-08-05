@@ -1,7 +1,6 @@
 package main
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -92,83 +91,17 @@ func TestTruncateLabel(t *testing.T) {
 	}
 }
 
-func TestSplitReplySegments(t *testing.T) {
-	seg := func(dest, body string) replySegment {
-		return replySegment{dest: dest, body: body}
+func TestComposePrompt(t *testing.T) {
+	b := NewBridge(ResolvedAccount{Owner: "zach@x.com"}, false)
+	// No stanza id → body verbatim.
+	if got := b.composePrompt("hello there", "", ""); got != "hello there" {
+		t.Errorf("composePrompt no stanza-id = %q, want 'hello there'", got)
 	}
-	cases := []struct {
-		name        string
-		in          string
-		wantSegs    []replySegment
-		wantLeading string
-	}{
-		{"single newline form", "to: room@muc.x\nhere are headlines",
-			[]replySegment{seg("room@muc.x", "here are headlines")}, ""},
-		{"no space after colon", "to:zach@x\nhi",
-			[]replySegment{seg("zach@x", "hi")}, ""},
-		{"inline body", "to: alice@x hello there",
-			[]replySegment{seg("alice@x", "hello there")}, ""},
-		{"two segments", "to: a@x.com\nblah blah\nto: b@x.com\nmore stuff",
-			[]replySegment{seg("a@x.com", "blah blah"), seg("b@x.com", "more stuff")}, ""},
-		{"multiline body per segment", "to: a@x\nl1\nl2\nto: b@x\nm1",
-			[]replySegment{seg("a@x", "l1\nl2"), seg("b@x", "m1")}, ""},
-		{"case insensitive", "TO: zach@x\nyo",
-			[]replySegment{seg("zach@x", "yo")}, ""},
-		{"leading junk before first to", "oops forgot\nto: a@x\nbody",
-			[]replySegment{seg("a@x", "body")}, "oops forgot"},
-		{"prose to: without @ is not a route", "to: whom it may concern\nhello",
-			nil, "to: whom it may concern\nhello"},
-		{"no routing at all", "just a reply", nil, "just a reply"},
-	}
-	for _, c := range cases {
-		gotSegs, gotLeading := splitReplySegments(c.in)
-		if gotLeading != c.wantLeading {
-			t.Errorf("%s: leading = %q, want %q", c.name, gotLeading, c.wantLeading)
-		}
-		if !reflect.DeepEqual(gotSegs, c.wantSegs) {
-			t.Errorf("%s: segs = %+v, want %+v", c.name, gotSegs, c.wantSegs)
-		}
-	}
-}
-
-func TestClassifyDest(t *testing.T) {
-	x := NewXMPPBridge(
-		ResolvedAccount{Rooms: []string{"team@muc.x"}, Owner: "zach@x"},
-		func(InboundMessage) {}, func(string, string) {},
-	)
-	x.occupants["team@muc.x"] = map[string]string{"alice": "alice@x"}
-	cases := []struct {
-		dest string
-		want destKind
-	}{
-		{"team@muc.x", destRoom},
-		{"team@muc.x/somenick", destRoom},
-		{"zach@x", destUser},
-		{"zach@x/phone", destUser},
-		{"alice@x", destUser},
-		{"stranger@x", destBlocked},
-		{"", destBlocked},
-	}
-	for _, c := range cases {
-		if got := x.classifyDest(c.dest); got != c.want {
-			t.Errorf("classifyDest(%q) = %d, want %d", c.dest, got, c.want)
-		}
-	}
-}
-
-func TestRoutingNudgeBound(t *testing.T) {
-	b := NewBridge(ResolvedAccount{}, false)
-	for i := 1; i <= maxRoutingNudges; i++ {
-		if !b.bumpRoutingNudge() {
-			t.Errorf("nudge %d should be allowed (cap %d)", i, maxRoutingNudges)
-		}
-	}
-	if b.bumpRoutingNudge() {
-		t.Error("nudge past the cap should be denied")
-	}
-	b.resetRoutingNudges()
-	if !b.bumpRoutingNudge() {
-		t.Error("after reset, a nudge should be allowed again")
+	// Stanza id + target JID → header lines, then blank line, then body.
+	got := b.composePrompt("do it", "msg-7", "zach@x.com/phone")
+	want := "stanza-id: msg-7\nreact-to: zach@x.com/phone\n\ndo it"
+	if got != want {
+		t.Errorf("composePrompt = %q, want %q", got, want)
 	}
 }
 

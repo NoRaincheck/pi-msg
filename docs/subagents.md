@@ -95,8 +95,8 @@ The human-facing pieces split in two:
   pi-msg already uses for Zach's inbound messages.
 - **Interactive UI dialogs — avoided.** The `clarify: true` TUI preview and the
   `/agents`-style `ctx.ui.select/confirm` prompts are the only things that would
-  hit an `extension_ui_request`, which pi-msg currently cancels (`src/rpc.ts`
-  `cancelUi`, "nobody's at the TUI"). We simply don't use them (see caveats).
+  hit an `extension_ui_request`, which pi-msg currently cancels (`rpc.go` /
+  `bridge.go`, "nobody's at the TUI"). We simply don't use them (see caveats).
 
 ## How beltino works with it
 
@@ -218,5 +218,5 @@ now:
 - pi `examples/extensions/subagent/` — the bundled reference implementation.
 - `pi-subagents` 0.35.1 (chosen) — github.com/nicobailon/pi-subagents.
 - `@tintinweb/pi-subagents` 0.14.3 (considered) — github.com/tintinweb/pi-subagents.
-- `pi-msg` `src/rpc.ts` — current `cancelUi` behaviour (only relevant to the
-  optional hard-clarification enhancement).
+- `pi-msg` `rpc.go` / `bridge.go` — current extension-dialog cancelling behaviour
+  (only relevant to the optional hard-clarification enhancement).

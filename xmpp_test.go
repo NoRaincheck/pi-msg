@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha1"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/xml"
 	"os"
@@ -22,15 +21,6 @@ func TestBareJid(t *testing.T) {
 		if got := bareJid(in); got != want {
 			t.Errorf("bareJid(%q) = %q, want %q", in, got, want)
 		}
-	}
-}
-
-func TestResourcepart(t *testing.T) {
-	if got := resourcepart("room@muc.x.com/alice"); got != "alice" {
-		t.Errorf("resourcepart = %q, want alice", got)
-	}
-	if got := resourcepart("zach@x.com"); got != "" {
-		t.Errorf("resourcepart with no resource = %q, want empty", got)
 	}
 }
 
@@ -192,18 +182,9 @@ func TestLoadAvatar(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := NewXMPPBridge(ResolvedAccount{Owner: "o@x.com", Avatar: path}, func(InboundMessage) {}, nil)
-	if b.avatarType != "image/png" {
-		t.Errorf("avatarType = %q, want image/png", b.avatarType)
-	}
 	sum := sha1.Sum(data)
 	if want := hex.EncodeToString(sum[:]); b.avatarHash != want {
 		t.Errorf("avatarHash = %q, want %q", b.avatarHash, want)
-	}
-	if want := base64.StdEncoding.EncodeToString(data); b.avatarB64 != want {
-		t.Errorf("avatarB64 = %q, want %q", b.avatarB64, want)
-	}
-	if u := b.avatarUpdate(); u == nil || u.Photo != b.avatarHash {
-		t.Errorf("avatarUpdate = %+v, want photo %q", u, b.avatarHash)
 	}
 }
 
@@ -212,30 +193,14 @@ func TestLoadAvatarMissingIsNonFatal(t *testing.T) {
 		ResolvedAccount{Owner: "o@x.com", Avatar: "/no/such/file.png"},
 		func(InboundMessage) {}, nil,
 	)
-	if b.avatarHash != "" || b.avatarB64 != "" || b.avatarType != "" {
-		t.Errorf("missing avatar file should leave avatar fields empty")
-	}
-	if b.avatarUpdate() != nil {
-		t.Errorf("avatarUpdate should be nil with no avatar")
+	if b.avatarHash != "" {
+		t.Errorf("missing avatar file should leave avatarHash empty")
 	}
 }
 
 func TestLoadAvatarNoneConfigured(t *testing.T) {
 	b := NewXMPPBridge(ResolvedAccount{Owner: "o@x.com"}, func(InboundMessage) {}, nil)
-	if b.avatarUpdate() != nil {
-		t.Errorf("no avatar configured → avatarUpdate should be nil")
-	}
-}
-
-func TestVCardXUpdateMarshal(t *testing.T) {
-	out, err := xml.Marshal(&vcardXUpdate{Photo: "abc123"})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	got := string(out)
-	for _, want := range []string{`xmlns="vcard-temp:x:update"`, "<photo>abc123</photo>"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("vcard x:update = %q, missing %q", got, want)
-		}
+	if b.avatarHash != "" {
+		t.Errorf("no avatar configured → avatarHash should be empty")
 	}
 }
