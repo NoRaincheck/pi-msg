@@ -37,8 +37,8 @@ type Bridge struct {
 	reactID        string // stanza id of that message (XEP-0444 target); "" disables
 	turnDest       string // reply destination for the current turn (owner or room jid)
 
-	lifecycleReactTo  string // snapshot of reactTo at run start, for lifecycle auto-reacts
-	lifecycleReactID  string // snapshot of reactID at run start; never overwritten by deliverReply
+	lifecycleReactTo string // snapshot of reactTo at run start, for lifecycle auto-reacts
+	lifecycleReactID string // snapshot of reactID at run start; never overwritten by deliverReply
 
 	typingMu   sync.Mutex
 	typingStop chan struct{}

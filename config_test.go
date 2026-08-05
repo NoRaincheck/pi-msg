@@ -24,14 +24,17 @@ func writeConfig(t *testing.T, cfg Config) string {
 
 func TestResolveAccountDefaults(t *testing.T) {
 	cfg := &Config{Accounts: map[string]Account{
-		"default": {JID: "pi@chat.example.com", Password: "pw", Owner: "zach@chat.example.com"},
+		"default": {JID: "pi@mymac.local", Owner: "zach@mymac.local"},
 	}}
 	got, err := resolveAccount(cfg, "")
 	if err != nil {
 		t.Fatalf("resolveAccount: %v", err)
 	}
-	if got.Service != "chat.example.com:5222" {
-		t.Errorf("Service = %q, want chat.example.com:5222", got.Service)
+	if got.BonjourService != "_presence._tcp" {
+		t.Errorf("BonjourService = %q, want _presence._tcp", got.BonjourService)
+	}
+	if got.DiscoverTimeout != 10*time.Second {
+		t.Errorf("DiscoverTimeout = %s, want 10s", got.DiscoverTimeout)
 	}
 	if got.Resource != "pi-msg" {
 		t.Errorf("Resource = %q, want pi-msg", got.Resource)
@@ -47,10 +50,37 @@ func TestResolveAccountDefaults(t *testing.T) {
 	}
 }
 
+func TestResolveAccountBonjourOptions(t *testing.T) {
+	cfg := &Config{Accounts: map[string]Account{
+		"default": {
+			JID: "pi@mymac.local", Owner: "zach@mymac.local",
+			BonjourService: "_jabber._tcp", BonjourName: "chat", DiscoverTimeout: "30s",
+		},
+	}}
+	got, err := resolveAccount(cfg, "")
+	if err != nil {
+		t.Fatalf("resolveAccount: %v", err)
+	}
+	if got.BonjourService != "_jabber._tcp" {
+		t.Errorf("BonjourService = %q, want _jabber._tcp", got.BonjourService)
+	}
+	if got.BonjourName != "chat" {
+		t.Errorf("BonjourName = %q, want chat", got.BonjourName)
+	}
+	if got.DiscoverTimeout != 30*time.Second {
+		t.Errorf("DiscoverTimeout = %s, want 30s", got.DiscoverTimeout)
+	}
+	if _, err := resolveAccount(&Config{Accounts: map[string]Account{
+		"default": {JID: "a@x.local", Owner: "o@x.local", DiscoverTimeout: "soon"},
+	}}, ""); err == nil {
+		t.Error("expected error for invalid discoverTimeout, got nil")
+	}
+}
+
 func TestResolveAccountRoomMode(t *testing.T) {
 	cfg := &Config{Accounts: map[string]Account{
 		"default": {
-			JID: "pi@chat.example.com", Password: "pw", Owner: "zach@chat.example.com",
+			JID: "pi@chat.example.com", Owner: "zach@chat.example.com",
 			Room: roomList{"team@muc.chat.example.com"}, Nick: "botpi",
 		},
 	}}
@@ -75,7 +105,7 @@ func TestResolveAccountRoomMode(t *testing.T) {
 func TestResolveAccountPingInterval(t *testing.T) {
 	base := func(pi string) *Config {
 		return &Config{Accounts: map[string]Account{
-			"default": {JID: "a@x.com", Password: "p", Owner: "o@x.com", PingInterval: pi},
+			"default": {JID: "a@x.local", Owner: "o@x.local", PingInterval: pi},
 		}}
 	}
 	// Unset → default cadence.
@@ -110,15 +140,15 @@ func TestResolveAccountPingInterval(t *testing.T) {
 
 func TestResolveAccountSelection(t *testing.T) {
 	cfg := &Config{Accounts: map[string]Account{
-		"default": {JID: "a@x.com", Password: "p", Owner: "o@x.com"},
-		"work":    {JID: "b@x.com", Password: "p", Owner: "o@x.com"},
+		"default": {JID: "a@x.local", Owner: "o@x.local"},
+		"work":    {JID: "b@x.local", Owner: "o@x.local"},
 	}}
 	got, err := resolveAccount(cfg, "work")
 	if err != nil {
 		t.Fatalf("resolveAccount: %v", err)
 	}
-	if got.Name != "work" || got.JID != "b@x.com" {
-		t.Errorf("selected %q/%q, want work/b@x.com", got.Name, got.JID)
+	if got.Name != "work" || got.JID != "b@x.local" {
+		t.Errorf("selected %q/%q, want work/b@x.local", got.Name, got.JID)
 	}
 	// Unknown requested falls back to default.
 	got, err = resolveAccount(cfg, "nope")
@@ -132,10 +162,10 @@ func TestResolveAccountSelection(t *testing.T) {
 
 func TestResolveAccountMissingFields(t *testing.T) {
 	cfg := &Config{Accounts: map[string]Account{
-		"default": {JID: "a@x.com"},
+		"default": {JID: "a@x.local"},
 	}}
 	if _, err := resolveAccount(cfg, ""); err == nil {
-		t.Fatal("expected error for missing password/owner, got nil")
+		t.Fatal("expected error for missing owner, got nil")
 	}
 }
 
@@ -148,7 +178,7 @@ func TestLoadConfigMissing(t *testing.T) {
 
 func TestLoadConfigRoundTrip(t *testing.T) {
 	path := writeConfig(t, Config{Accounts: map[string]Account{
-		"default": {JID: "a@x.com", Password: "p", Owner: "o@x.com"},
+		"default": {JID: "a@x.local", Owner: "o@x.local"},
 	}})
 	cfg, err := loadConfig(path)
 	if err != nil {
@@ -178,7 +208,7 @@ func TestRoomConfigParsing(t *testing.T) {
 	}
 	// resolveAccount dedupes/cleans and drives RoomMode + multiple Rooms.
 	got, err := resolveAccount(&Config{Accounts: map[string]Account{
-		"default": {JID: "pi@x", Password: "p", Owner: "o@x",
+		"default": {JID: "pi@x.local", Owner: "o@x.local",
 			Room: roomList{"a@muc.x", " a@muc.x ", "b@muc.x", ""}},
 	}}, "")
 	if err != nil {

@@ -30,21 +30,27 @@ func (r *roomList) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// Account is one XMPP account the bridge can connect as, as stored in the
-// config file. Only jid/password/owner are required; the rest have defaults.
+// Account is one Bonjour account the bridge can connect as, as stored in the
+// config file. The bridge only ever connects to a local XMPP server discovered
+// over Bonjour (mDNS/DNS-SD); there is no remote-server mode. Only jid and
+// owner are required; the rest have defaults.
 type Account struct {
-	// JID is the bare JID of the bot account, e.g. "pi@chat.example.com".
+	// JID is the bare JID of the bot account, e.g. "pi@mymac.local".
 	JID string `json:"jid"`
-	// Password for the bot account.
-	Password string `json:"password"`
 	// Owner is the JID of the human this account relays to. In 1:1 mode it is
 	// also the only JID whose messages drive the agent. In room mode it is the
 	// canonical (trusted) participant.
 	Owner string `json:"owner"`
-	// Service is the connection endpoint. Defaults to "<jid-domain>:5222". A
-	// leading "xmpp://" is tolerated and stripped; a "wss://…" value connects
-	// via XMPP-over-WebSocket.
-	Service string `json:"service,omitempty"`
+	// BonjourService is the DNS-SD service type browsed to find the local XMPP
+	// server. Defaults to "_xmpp-client._tcp" (with a legacy "_jabber._tcp"
+	// fallback when unset).
+	BonjourService string `json:"bonjourService,omitempty"`
+	// BonjourName, when set, narrows discovery to a service instance whose name
+	// contains this string — useful when several local servers advertise.
+	BonjourName string `json:"bonjourName,omitempty"`
+	// DiscoverTimeout is how long each Bonjour discovery attempt waits for a
+	// server before failing. A Go duration string ("10s"). Defaults to "10s".
+	DiscoverTimeout string `json:"discoverTimeout,omitempty"`
 	// Resource is the XMPP client-session label. Defaults to "pi-msg".
 	Resource string `json:"resource,omitempty"`
 	// ToolActivity mirrors a one-line notice each time a tool starts.
@@ -102,23 +108,24 @@ type Config struct {
 // ResolvedAccount is a fully-resolved account ready to connect with, defaults
 // applied. RoomMode reports whether any room was set.
 type ResolvedAccount struct {
-	Name          string
-	JID           string
-	Password      string
-	Owner         string
-	Service       string
-	Resource      string
-	ToolActivity   bool
-	Reactions      bool
-	RoomReactions  bool
-	Model          string
-	Workdir        string
-	Rooms          []string
-	Nick          string
-	RoomTrigger   string
-	UploadService string
-	PingInterval  time.Duration
-	Avatar        string
+	Name            string
+	JID             string
+	Owner           string
+	BonjourService  string
+	BonjourName     string
+	DiscoverTimeout time.Duration
+	Resource        string
+	ToolActivity    bool
+	Reactions       bool
+	RoomReactions   bool
+	Model           string
+	Workdir         string
+	Rooms           []string
+	Nick            string
+	RoomTrigger     string
+	UploadService   string
+	PingInterval    time.Duration
+	Avatar          string
 }
 
 // RoomMode reports whether this account operates in MUC (group-chat) mode.
@@ -129,6 +136,12 @@ const (
 	defaultResource = "pi-msg"
 	// defaultPingInterval is the keepalive cadence when pingInterval is unset.
 	defaultPingInterval = 60 * time.Second
+	// defaultBonjourService is the DNS-SD service type browsed to find a local
+	// XMPP server when bonjourService is unset: the Bonjour IM / serverless
+	// messaging type used by Adium and Messages.
+	defaultBonjourService = "_presence._tcp"
+	// defaultDiscoverTimeout is how long each Bonjour discovery attempt waits.
+	defaultDiscoverTimeout = 10 * time.Second
 )
 
 // configPath returns the config file path: $PI_MSG_CONFIG or
@@ -168,16 +181,6 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// defaultServiceFor derives the default XMPP service endpoint (host:port) from
-// a bare JID's domain.
-func defaultServiceFor(jid string) string {
-	domain := jid
-	if at := strings.IndexByte(jid, '@'); at >= 0 {
-		domain = jid[at+1:]
-	}
-	return domain + ":5222"
-}
-
 // localpart returns the part of a bare JID before '@', or the whole string if
 // there is no '@'.
 func localpart(jid string) string {
@@ -212,9 +215,6 @@ func resolveAccount(cfg *Config, requested string) (ResolvedAccount, error) {
 	if acct.JID == "" {
 		missing = append(missing, "jid")
 	}
-	if acct.Password == "" {
-		missing = append(missing, "password")
-	}
 	if acct.Owner == "" {
 		missing = append(missing, "owner")
 	}
@@ -241,9 +241,17 @@ func resolveAccount(cfg *Config, requested string) (ResolvedAccount, error) {
 	if trigger == "" {
 		trigger = nick
 	}
-	service := acct.Service
-	if service == "" {
-		service = defaultServiceFor(acct.JID)
+	bonjourService := acct.BonjourService
+	if bonjourService == "" {
+		bonjourService = defaultBonjourService
+	}
+	discoverTimeout := defaultDiscoverTimeout
+	if s := strings.TrimSpace(acct.DiscoverTimeout); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return ResolvedAccount{}, fmt.Errorf("pi-msg: account %q has invalid discoverTimeout %q: %w", name, s, err)
+		}
+		discoverTimeout = d
 	}
 	resource := acct.Resource
 	if resource == "" {
@@ -259,23 +267,24 @@ func resolveAccount(cfg *Config, requested string) (ResolvedAccount, error) {
 	}
 
 	return ResolvedAccount{
-		Name:          name,
-		JID:           acct.JID,
-		Password:      acct.Password,
-		Owner:         acct.Owner,
-		Service:       service,
-		Resource:      resource,
-		ToolActivity:   acct.ToolActivity,
-		Reactions:      acct.Reactions,
-		RoomReactions:  acct.RoomReactions,
-		Model:          acct.Model,
-		Workdir:       acct.Workdir,
-		Rooms:         rooms,
-		Nick:          nick,
-		RoomTrigger:   trigger,
-		UploadService: strings.TrimSpace(acct.UploadService),
-		PingInterval:  pingInterval,
-		Avatar:        strings.TrimSpace(acct.Avatar),
+		Name:            name,
+		JID:             acct.JID,
+		Owner:           acct.Owner,
+		BonjourService:  bonjourService,
+		BonjourName:     strings.TrimSpace(acct.BonjourName),
+		DiscoverTimeout: discoverTimeout,
+		Resource:        resource,
+		ToolActivity:    acct.ToolActivity,
+		Reactions:       acct.Reactions,
+		RoomReactions:   acct.RoomReactions,
+		Model:           acct.Model,
+		Workdir:         acct.Workdir,
+		Rooms:           rooms,
+		Nick:            nick,
+		RoomTrigger:     trigger,
+		UploadService:   strings.TrimSpace(acct.UploadService),
+		PingInterval:    pingInterval,
+		Avatar:          strings.TrimSpace(acct.Avatar),
 	}, nil
 }
 

@@ -4,6 +4,3 @@ dist/
 /pi-msg
 *.log
 .DS_Store
-result
-result-*
-.direnv/

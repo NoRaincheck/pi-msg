@@ -1,7 +1,15 @@
 # pi-msg
 
-Drive the [Pi](https://pi.dev) coding agent **entirely from an XMPP chat client** —
-1:1 or in a group chat (MUC).
+> Fork of [zachpmanson/pi-msg](https://github.com/zachpmanson/pi-msg/tree/main), modified
+> to connect **only** to a local XMPP server discovered via Bonjour — no remote
+> XMPP/Jabber server, no password auth.
+
+Drive the [Pi](https://pi.dev) coding agent **entirely from a chat client** — 1:1
+or in a group chat (MUC) — over a **local XMPP service discovered via Bonjour
+(mDNS/DNS-SD)**. pi-msg never contacts a remote XMPP/Jabber server: it browses
+your LAN for Bonjour IM users (`_presence._tcp`, as advertised by Adium and
+Messages), connects to them anonymously, and relays your messages to the agent
+and back.
 
 `pi-msg` launches `pi --mode rpc`, then bridges Pi's JSONL event stream to XMPP
 (via [mellium.im/xmpp](https://mellium.im/xmpp)): the assistant's replies are relayed
@@ -60,9 +68,8 @@ Create `~/.config/pi-msg/config.json` (override the path with `PI_MSG_CONFIG`), 
 {
   "accounts": {
     "default": {
-      "jid": "pi@chat.example.com",
-      "password": "super-secret",
-      "owner": "you@chat.example.com",
+      "jid": "pi@mymac.local",
+      "owner": "you@mymac.local",
       "model": "anthropic/claude-sonnet-latest",
       "workdir": "/path/to/your/project"
     }
@@ -74,23 +81,62 @@ Per-account fields:
 
 | field | required | default | notes |
 | --- | --- | --- | --- |
-| `jid` | yes | — | bare JID of the bot account |
-| `password` | yes | — | bot account password |
+| `jid` | yes | — | bare JID of the bot account (e.g. `pi@mymac.local`) |
 | `owner` | yes | — | the human this account relays to; the **canonical** (trusted) driver |
-| `service` | no | `<jid-domain>:5222` | `host:port` (a leading `xmpp://` is tolerated) |
+| `bonjourService` | no | `_presence._tcp` | DNS-SD service type to browse — Bonjour IM (`_presence._tcp`) first, with `_xmpp-client._tcp` / `_jabber._tcp` as fallbacks when unset |
+| `bonjourName` | no | — | narrow discovery to a service instance whose name contains this string (for LANs with several local servers) |
+| `discoverTimeout` | no | `10s` | how long each Bonjour discovery attempt waits for a server (Go duration) |
 | `resource` | no | `pi-msg` | XMPP resource (client-session label) |
 | `model` | no | Pi's default | model pattern passed to `pi --model` |
 | `workdir` | no | current dir | working directory for the agent (also where Pi discovers `AGENTS.md`/`CLAUDE.md`) |
 | `room` | no | — | a bare MUC JID (or an **array** of them) to also join for **group chat** (see below) |
 | `nick` | no | JID localpart | occupant nickname used in the room(s) |
 | `roomTrigger` | no | `nick` | address prefix that makes a room message a prompt (e.g. `pi` → `pi: …`) |
-| `uploadService` | no | auto-probed | XEP-0363 upload component JID for file transfer (e.g. `upload.chat.example.com`) |
+| `uploadService` | no | auto-probed | XEP-0363 upload component JID for file transfer (set it if your local server has one) |
 | `pingInterval` | no | `60s` | keepalive cadence (Go duration): XEP-0199 server ping + XEP-0410 MUC self-ping; `0` disables |
 | `reactions` | no | `false` | XEP-0444 emoji reactions on 1:1 owner messages: lifecycle → 👀 picked up / ✅ done / ⛔ aborted, and enables the agent-driven `send_reaction` tool (see [Agent tools](#agent-tools)) |
 | `avatar` | no | — | path to a local image (PNG/JPEG/GIF) published as the bot's XEP-0153 vCard profile picture on connect |
 
 Multiple accounts: add more keys under `accounts`; `default` is used unless you set
 `PI_MSG_ACCOUNT=<name>`. In 1:1 mode only the `owner` JID may drive the agent.
+
+## Bonjour (local XMPP) only
+
+pi-msg connects **only** to a local XMPP service advertised over Bonjour. On
+every connect (and reconnect) it:
+
+1. **Discovers** — browses Bonjour IM (`_presence._tcp`, where each online user
+   advertises an instance like `you@my-mac`), falling back to `_xmpp-client._tcp`
+   and then legacy `_jabber._tcp`, and dials the resolved address:port.
+   Discovery is fresh each attempt, so a user that comes online later on the
+   LAN is picked up.
+2. **Authenticates anonymously** — no password anywhere. It tries SASL
+   `ANONYMOUS` first (so standard resource binding applies); if the service
+   offers no ANONYMOUS mechanism it connects with **no SASL at all**, using a
+   resource-binding feature that doesn't require prior authentication.
+3. **Uses opportunistic STARTTLS** — it attempts TLS first, accepting
+   self-signed certificates (the LAN is trusted); if the service doesn't offer
+   TLS it falls back to plaintext.
+
+See who's online and what config to write with:
+
+```bash
+just discover        # or: ./pi-msg --discover
+```
+
+which lists every discovered service (e.g. `crn@mbpro  mbpro.local:5298`) and
+prints the `jid`/`owner` to put in config.
+
+Requirements:
+
+- **mDNS must work on the host** — macOS resolves and advertises Bonjour out of
+  the box; Linux needs `avahi` (or `systemd-resolved` with mDNS enabled).
+- **A Bonjour IM user (e.g. Adium/Messages) must be online**, or a local XMPP
+  server advertising `_xmpp-client._tcp` with anonymous / no-auth client
+  connections (e.g. Prosody with `authentication = "anonymous"`, or an
+  ejabberd anonymous-only virtual host).
+- The bot and owner JIDs are like `pi@<host>` — the domain is the machine's
+  local hostname, **not** a registered internet domain.
 
 ## Group chat (MUC)
 
@@ -177,17 +223,6 @@ side-effect actions are tools.
 go build -o pi-msg . && ./pi-msg     # from the repo
 ```
 
-### Nix
-
-```bash
-nix run   github:zachpmanson/pi-msg    # run the bridge
-nix build github:zachpmanson/pi-msg    # build the package (bin: pi-msg)
-```
-
-Dev shell (Go + gopls) via `nix develop`, or automatically with
-[direnv](https://direnv.net/) — the repo ships a `.envrc` (`use flake`); run
-`direnv allow` once.
-
 Set `PI_MSG_DEBUG=1` to print connection/status/stderr diagnostics. On startup the bot
 simply comes **online** in your roster (presence `listening`); on shutdown or a pi crash it
 goes **offline** with a `<status>` describing why and when — pi-msg no longer posts chat
@@ -202,5 +237,7 @@ Requirements: Go ≥ 1.26 (to build), and a `pi` on `PATH` that's logged into a 
   raises a dialog (`select`/`confirm`/`input`/`editor`), pi-msg auto-dismisses it
   (nobody's at the TUI) and tells you over chat — so approval-gated tools are declined
   over the bridge.
-- Auth uses SASL SCRAM-SHA-256 (mellium negotiates it cleanly against ejabberd);
-  STARTTLS is required first.
+- Auth is **anonymous**: pi-msg tries SASL `ANONYMOUS` first, then falls back to no
+  authentication at all (with a resource-binding feature that doesn't require auth).
+  STARTTLS is opportunistic — attempted first and skipped if the server doesn't offer
+  it; self-signed certificates are accepted, since the connection is local-only.

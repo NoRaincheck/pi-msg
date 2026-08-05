@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -370,7 +371,9 @@ func (b *XMPPBridge) selfPing(ctx context.Context, session *xmpp.Session, room s
 	}
 }
 
-// connect dials and negotiates a client session for the account.
+// connect discovers a local XMPP server via Bonjour and negotiates a session
+// against it. The server is discovered fresh on every attempt (including
+// reconnect), so a server that appears later on the LAN is found too.
 func (b *XMPPBridge) connect(ctx context.Context) (*xmpp.Session, error) {
 	addr := b.acct.JID
 	if b.acct.Resource != "" {
@@ -381,11 +384,49 @@ func (b *XMPPBridge) connect(ctx context.Context) (*xmpp.Session, error) {
 		return nil, fmt.Errorf("invalid jid %q: %w", b.acct.JID, err)
 	}
 
-	target := strings.TrimPrefix(b.acct.Service, "xmpp://")
-	if target == "" {
-		target = j.Domain().String() + ":5222"
+	endpoint, err := b.discover(ctx)
+	if err != nil {
+		return nil, err
 	}
+	b.log("info", fmt.Sprintf("discovered local XMPP server %q on port %d", endpoint.Host, endpoint.Port))
 
+	target := net.JoinHostPort(endpoint.dialAddr(), strconv.Itoa(endpoint.Port))
+
+	// Bonjour sessions are anonymous (no credentials) with opportunistic
+	// STARTTLS: try TLS first and fall back to plaintext, and try SASL
+	// ANONYMOUS first and fall back to no authentication at all. Each attempt
+	// dials a fresh TCP connection, since stream negotiation consumes it.
+	attempts := []struct {
+		useTLS  bool
+		useSASL bool
+	}{
+		{true, true},
+		{false, true},
+		{true, false},
+		{false, false},
+	}
+	var lastErr error
+	for _, a := range attempts {
+		session, err := b.dialAndNegotiate(ctx, j, target, a.useTLS, a.useSASL)
+		if err == nil {
+			return session, nil
+		}
+		b.log("info", fmt.Sprintf("connection attempt (tls=%v, sasl=%v) failed: %v", a.useTLS, a.useSASL, err))
+		lastErr = err
+	}
+	return nil, fmt.Errorf("could not negotiate an XMPP session with %s: %w", target, lastErr)
+}
+
+// discover returns the local XMPP server found via Bonjour using the account's
+// discovery settings.
+func (b *XMPPBridge) discover(ctx context.Context) (*bonjourEndpoint, error) {
+	return discoverBonjour(ctx, b.acct.BonjourService, b.acct.BonjourName, b.acct.DiscoverTimeout)
+}
+
+// dialAndNegotiate dials target and negotiates a client session with the given
+// TLS and authentication strategy. On success the caller owns the returned
+// session; on failure the TCP connection is closed.
+func (b *XMPPBridge) dialAndNegotiate(ctx context.Context, j jid.JID, target string, useTLS, useSASL bool) (*xmpp.Session, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var d net.Dialer
@@ -394,19 +435,38 @@ func (b *XMPPBridge) connect(ctx context.Context) (*xmpp.Session, error) {
 		return nil, fmt.Errorf("dialing %s: %w", target, err)
 	}
 
-	features := []xmpp.StreamFeature{
-		xmpp.StartTLS(&tls.Config{ServerName: j.Domain().String()}),
-		// SCRAM-SHA-256 first (works against ejabberd via mellium, unlike the
-		// @xmpp/client SCRAM-SHA-1 the TS build had to disable), PLAIN last.
-		xmpp.SASL("", b.acct.Password, sasl.ScramSha256Plus, sasl.ScramSha256, sasl.ScramSha1Plus, sasl.ScramSha1, sasl.Plain),
-		xmpp.BindResource(),
+	var features []xmpp.StreamFeature
+	if useTLS {
+		// Bonjour trusts the LAN: accept any certificate, including self-signed
+		// ones issued by the local server.
+		features = append(features, xmpp.StartTLS(&tls.Config{
+			ServerName:         j.Domain().String(),
+			InsecureSkipVerify: true,
+		}))
 	}
+	if useSASL {
+		// No credentials: SASL ANONYMOUS is preferred so standard resource
+		// binding (which requires the Authn state) still applies.
+		features = append(features, xmpp.SASL("", "", sasl.Anonymous))
+	}
+	features = append(features, bindFeature(useSASL))
+
 	session, err := xmpp.NewClientSession(ctx, j, conn, features...)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
 	return session, nil
+}
+
+// bindFeature returns the resource-binding stream feature for the given
+// authentication state: the stock feature after SASL, or a no-auth variant
+// when SASL was skipped entirely.
+func bindFeature(authed bool) xmpp.StreamFeature {
+	if authed {
+		return xmpp.BindResource()
+	}
+	return bindNoAuth()
 }
 
 // incomingMsg is a received message stanza reduced to the fields the bridge
