@@ -14,6 +14,3 @@ clean:
 
 format:
 	gofmt -w .
-
-deploy:
-	git push origin HEAD
