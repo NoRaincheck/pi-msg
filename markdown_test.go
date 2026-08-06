@@ -165,7 +165,7 @@ func TestMDRawHTMLIsLiteral(t *testing.T) {
 func TestMDTable(t *testing.T) {
 	md := "| name | value |\n| --- | ---: |\n| a | 1 |\n| b | 2 |"
 	got := renderXHTML(t, md)
-	want := `<p style="font-family:monospace">name | value<br/>a | 1<br/>b | 2</p>`
+	want := `<p style="font-family:monospace">name | value<br/>a    | 1<br/>b    | 2</p>`
 	if got != want {
 		t.Errorf("table = %q, want %q", got, want)
 	}

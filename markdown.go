@@ -446,7 +446,105 @@ func (q quoteBlock) xhtml() string {
 
 type tableBlock struct{ rows [][]string }
 
+// tableColAlign reports the alignment for a separator cell: 0=left, 1=center, 2=right.
+func tableColAlign(cell string) int {
+	c := strings.TrimSpace(cell)
+	left, right := strings.HasPrefix(c, ":"), strings.HasSuffix(c, ":")
+	if left && right {
+		return 1
+	}
+	if right {
+		return 2
+	}
+	return 0
+}
+
+// tableColWidth returns the column widths needed for this table.
+// Separator rows (---, :---:, etc.) are excluded from width calculation.
+func tableColWidths(rows [][]string) []int {
+	if len(rows) == 0 {
+		return nil
+	}
+	n := len(rows[0])
+	w := make([]int, n)
+	for _, r := range rows {
+		if isTableSeparatorRow(r) {
+			continue
+		}
+		for j, c := range r {
+			if j < n && len(c) > w[j] {
+				w[j] = len(c)
+			}
+		}
+	}
+	return w
+}
+
+// tableRowFormatted formats one row with padding to match the given column widths.
+// For separator rows (alignment cells), it renders dashes/colons instead of padding.
+func tableRowFormatted(row []string, widths []int, sepRow bool) string {
+	var parts []string
+	for j, cell := range row {
+		if sepRow {
+			// Separator row: render dashes with optional colons for alignment.
+			align := tableColAlign(cell)
+			w := widths[j]
+			dashes := strings.Repeat("-", w)
+			switch align {
+			case 1: // center
+				parts = append(parts, ":"+dashes+":")
+			case 2: // right
+				parts = append(parts, dashes+":")
+			default: // left
+				parts = append(parts, ":"+dashes)
+			}
+		} else {
+			// Data row: pad to column width.
+			switch j {
+			case len(widths) - 1:
+				parts = append(parts, cell)
+			default:
+				parts = append(parts, cell+strings.Repeat(" ", widths[j]-len(cell)))
+			}
+		}
+	}
+	return strings.Join(parts, " | ")
+}
+
 func (t tableBlock) plain() string {
+	widths := tableColWidths(t.rows)
+	if len(widths) == 0 {
+		return t.plainUnaligned()
+	}
+	var b strings.Builder
+	for i, r := range t.rows {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(tableRowFormatted(r, widths, isTableSeparatorRow(r)))
+	}
+	return b.String()
+}
+
+func (t tableBlock) xhtml() string {
+	widths := tableColWidths(t.rows)
+	if len(widths) == 0 {
+		return t.xhtmlUnaligned()
+	}
+	var b strings.Builder
+	b.WriteString(`<p style="font-family:monospace">`)
+	for i, r := range t.rows {
+		if i > 0 {
+			b.WriteString("<br/>")
+		}
+		b.WriteString(escText(tableRowFormatted(r, widths, isTableSeparatorRow(r))))
+	}
+	b.WriteString("</p>")
+	return b.String()
+}
+
+// Fallback: unaligned (when no rows or inconsistent column counts).
+func (t tableBlock) plainUnaligned() string {
 	var b strings.Builder
 	for i, r := range t.rows {
 		if i > 0 {
@@ -457,7 +555,7 @@ func (t tableBlock) plain() string {
 	return b.String()
 }
 
-func (t tableBlock) xhtml() string {
+func (t tableBlock) xhtmlUnaligned() string {
 	var b strings.Builder
 	b.WriteString(`<p style="font-family:monospace">`)
 	for i, r := range t.rows {
@@ -473,6 +571,23 @@ func (t tableBlock) xhtml() string {
 	}
 	b.WriteString("</p>")
 	return b.String()
+}
+
+// isTableSeparatorRow checks if a row is a separator row (all cells are
+// alignment markers like ---, :---:, etc.) without consulting the parser.
+func isTableSeparatorRow(row []string) bool {
+	for _, c := range row {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			return false
+		}
+		for _, r := range c {
+			if r != '-' && r != ':' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // --- block parsing ---
