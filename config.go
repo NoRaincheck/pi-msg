@@ -53,7 +53,7 @@ type Account struct {
 	// (the "phsh" key). Optional; a missing/invalid file is a logged warning,
 	// not fatal.
 	Avatar string `json:"avatar,omitempty"`
-	// Alias is the display alias advertised as the XEP-0174 "nick" key in the
+	// Alias is the display alias advertised as the XEP-0174 "1st" key in the
 	// bot's Bonjour TXT record, shown as the contact's name in Bonjour IM
 	// clients (e.g. Adium). Optional; absent means clients fall back to the
 	// JID.

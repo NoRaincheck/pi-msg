@@ -193,14 +193,21 @@ type serverlessAdvertised struct {
 
 // bonjourTXT builds the XEP-0174 TXT record keys for the bot's advertised
 // _presence._tcp instance: the required txtvers/port/status, plus phsh (avatar
-// hash) and nick (display alias) when present.
-func bonjourTXT(port int, avatarHash, alias string) []string {
+// hash) and 1st (display name) when present. The display name uses the XEP-0174
+// "1st" key, which Adium's native Bonjour plugin reads (it ignores "nick"); it
+// is the configured alias, defaulting to the JID localpart so the bot never
+// shows up as an unnamed contact.
+func bonjourTXT(port int, avatarHash, alias string, own jid.JID) []string {
 	txt := []string{"txtvers=1", "port=" + strconv.Itoa(port), "status=avail"}
 	if avatarHash != "" {
 		txt = append(txt, "phsh="+avatarHash)
 	}
-	if strings.TrimSpace(alias) != "" {
-		txt = append(txt, "nick="+strings.TrimSpace(alias))
+	name := strings.TrimSpace(alias)
+	if name == "" {
+		name = own.Localpart()
+	}
+	if name != "" {
+		txt = append(txt, "1st="+name)
 	}
 	return txt
 }
@@ -220,7 +227,7 @@ func advertiseAndListen(ctx context.Context, own jid.JID, avatarHash, alias stri
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 
-	txt := bonjourTXT(port, avatarHash, alias)
+	txt := bonjourTXT(port, avatarHash, alias, own)
 	svc, err := zeroconf.Register(escapeInstance(own.String()), "_presence._tcp", "local", port, txt, nil)
 	if err != nil {
 		ln.Close()

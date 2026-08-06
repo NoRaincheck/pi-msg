@@ -590,13 +590,15 @@ func (b *Bridge) reply(text string) {
 	b.xmpp.Send(text)
 }
 
-// deliverReply routes one agent-produced message. Serverless messaging is
-// strictly 1:1, so the text goes to the owner verbatim.
+// deliverReply routes one agent-produced message. The agent's markdown output
+// is converted to XHTML-IM (XEP-0071) so the owner's rich client (e.g. Adium)
+// renders it styled, with a plain-text fallback built in. Serverless messaging
+// is strictly 1:1, so the text goes to the owner.
 func (b *Bridge) deliverReply(text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	stanzaID := b.xmpp.Send(text)
+	stanzaID := b.xmpp.SendRich(b.acct.Owner, text)
 	// Update reaction target to the just-sent message so subsequent
 	// send_reaction calls target the agent's own message.
 	if stanzaID != "" {

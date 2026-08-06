@@ -36,7 +36,11 @@ sequenceDiagram
     Note over Pi: fresh session
 ```
 
-Each finished **assistant message** → sent to you as chat. Agent state shows on
+Each finished **assistant message** → sent to you as chat. The agent's markdown
+is converted to **XHTML-IM (XEP-0071)** on the wire, so rich clients like Adium
+render headings, bold/italic, lists, links, and `monospace` code blocks — always
+alongside a plain-text `<body>` fallback, so clients without XHTML-IM (or with
+received formatting disabled) still see the content. Agent state shows on
 three independent signals: a **typing indicator** while a reply is actually being
 written, presence **`<show>`** (`dnd` while busy, available when idle), and a
 presence **status** label of the current activity (`thinking…`, `running: <cmd>`,
@@ -94,7 +98,7 @@ Per-account fields:
 | `workdir` | no | current dir | working directory for the agent (also where Pi discovers `AGENTS.md`/`CLAUDE.md`) |
 | `reactions` | no | `false` | XEP-0444 emoji reactions on owner messages: lifecycle → 👀 picked up / ✅ done / ⛔ aborted, and enables the agent-driven `send_reaction` tool (see [Agent tools](#agent-tools)) |
 | `avatar` | no | — | path to a local image (PNG/JPEG/GIF) whose SHA-1 hash is advertised as the bot's XEP-0153 photo hash (`phsh` key) in the Bonjour TXT record |
-| `alias` | no | — | display alias advertised as the XEP-0174 `nick` key in the Bonjour TXT record; shown as the contact's name in Adium and other Bonjour IM clients |
+| `alias` | no | JID localpart | display alias advertised as the XEP-0174 `1st` key in the Bonjour TXT record; shown as the contact's name in Adium and other Bonjour IM clients (defaults to the JID's localpart, e.g. `pi-bot`) |
 
 Old server-only keys (`room`, `resource`, `nick`, `roomTrigger`, `uploadService`,
 `pingInterval`, …) are silently ignored, so pre-existing configs keep loading.
@@ -176,6 +180,11 @@ Requirements: Go ≥ 1.26 (to build), and a `pi` on `PATH` that's logged into a 
   raises a dialog (`select`/`confirm`/`input`/`editor`), pi-msg auto-dismisses it
   (nobody's at the TUI) and tells you over chat — so approval-gated tools are declined
   over the bridge.
-- The connection is a **raw peer stream over plain TCP on your LAN** — there is no
-  encryption layer (serverless messaging predates TLS and doesn't use it). Trust your
+- The connection is a **raw peer stream over plain TCP on your LAN** — there is
+  no encryption layer (serverless messaging predates TLS and doesn't use it). Trust your
   LAN.
+- Assistant replies travel as **XHTML-IM** (markdown → XEP-0071): the converter
+  emits only the integration-set elements (paragraphs, `strong`/`em`, monospace
+  spans and blocks, lists, blockquotes, safe links), escapes all text, and splits
+  long replies into multiple self-contained styled messages. Links are restricted
+  to `http`/`https`/`mailto`, and raw HTML from the agent is shown as inert text.

@@ -15,15 +15,21 @@ import (
 )
 
 // TestBonjourTXT verifies the advertised TXT record: required keys always
-// present, and phsh/nick only when configured.
+// present, phsh only when configured, and the display name as the configured
+// alias or the JID localpart as a fallback.
 func TestBonjourTXT(t *testing.T) {
-	base := bonjourTXT(5298, "", "")
-	if got, want := strings.Join(base, " "), "txtvers=1 port=5298 status=avail"; got != want {
+	own, err := jid.Parse("pi@mbpro")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := bonjourTXT(5298, "", "", own)
+	if got, want := strings.Join(base, " "), "txtvers=1 port=5298 status=avail 1st=pi"; got != want {
 		t.Errorf("base TXT = %q, want %q", got, want)
 	}
 
-	withAvatar := bonjourTXT(5432, "abc123", "")
-	want := map[string]bool{"txtvers=1": true, "port=5432": true, "status=avail": true, "phsh=abc123": true}
+	withAvatar := bonjourTXT(5432, "abc123", "", own)
+	want := map[string]bool{"txtvers=1": true, "port=5432": true, "status=avail": true, "phsh=abc123": true, "1st=pi": true}
 	for _, kv := range withAvatar {
 		delete(want, kv)
 	}
@@ -31,21 +37,21 @@ func TestBonjourTXT(t *testing.T) {
 		t.Errorf("avatar TXT = %v, missing keys: %v", withAvatar, want)
 	}
 
-	withAlias := bonjourTXT(5298, "", "  Pi  ")
+	withAlias := bonjourTXT(5298, "", "  Pi  ", own)
 	if len(withAlias) != 4 {
 		t.Fatalf("alias TXT length = %d, want 4 (%v)", len(withAlias), withAlias)
 	}
-	if withAlias[3] != "nick=Pi" {
-		t.Errorf("alias TXT = %v, want nick=Pi", withAlias)
+	if withAlias[3] != "1st=Pi" {
+		t.Errorf("alias TXT = %v, want 1st=Pi", withAlias)
 	}
 
-	both := bonjourTXT(5298, "abc123", "Pi")
+	both := bonjourTXT(5298, "abc123", "Pi", own)
 	found := map[string]bool{}
 	for _, kv := range both {
 		found[kv] = true
 	}
-	if !found["phsh=abc123"] || !found["nick=Pi"] {
-		t.Errorf("full TXT = %v, want both phsh and nick", both)
+	if !found["phsh=abc123"] || !found["1st=Pi"] {
+		t.Errorf("full TXT = %v, want both phsh and 1st", both)
 	}
 }
 

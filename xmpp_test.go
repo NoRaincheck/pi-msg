@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"mellium.im/xmpp/stanza"
 )
 
 func TestBareJid(t *testing.T) {
@@ -202,5 +204,52 @@ func TestLoadAvatarNoneConfigured(t *testing.T) {
 	b := NewXMPPBridge(ResolvedAccount{Owner: "o@x.com"}, func(InboundMessage) {}, nil)
 	if b.avatarHash != "" {
 		t.Errorf("no avatar configured → avatarHash should be empty")
+	}
+}
+
+// xhtmlIMTestMsg mirrors the wire struct built by encodeXHTMLChat, so the
+// XEP-0071 form can be asserted without a live session.
+func xhtmlIMTestMsg(plain, xhtml string) any {
+	return struct {
+		stanza.Message
+		Body string          `xml:"body"`
+		HTML *xhtmlIMWrapper `xml:"http://jabber.org/protocol/xhtml-im html,omitempty"`
+	}{
+		Message: stanza.Message{ID: "id-1", Type: stanza.ChatMessage},
+		Body:    plain,
+		HTML:    &xhtmlIMWrapper{Raw: `<body xmlns="http://www.w3.org/1999/xhtml">` + xhtml + `</body>`},
+	}
+}
+
+func TestXHTMLIMMessageMarshal(t *testing.T) {
+	out, err := xml.Marshal(xhtmlIMTestMsg("a < b", `<p style="font-family:monospace">a &lt; b</p>`))
+	if err != nil {
+		t.Fatalf("marshal xhtml-im: %v", err)
+	}
+	got := string(out)
+	for _, want := range []string{
+		"<html xmlns=\"http://jabber.org/protocol/xhtml-im\">",
+		`<body xmlns="http://www.w3.org/1999/xhtml">`,
+		`<p style="font-family:monospace">a &lt; b</p>`,
+		"<body>a &lt; b</body>",
+		`id="id-1"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("xhtml-im = %q, missing %q", got, want)
+		}
+	}
+}
+
+func TestXHTMLIMNoUnsafeMarkup(t *testing.T) {
+	// The converter must never leak raw HTML or forbidden entities into the
+	// XHTML-IM payload.
+	chunks := renderRichMessage("**bold** <script>alert(1)</script> `x` & y")
+	for _, c := range chunks {
+		if strings.Contains(c.xhtml, "<script") {
+			t.Errorf("raw HTML leaked into xhtml: %q", c.xhtml)
+		}
+		if strings.Contains(c.xhtml, "&nbsp;") {
+			t.Errorf("forbidden &nbsp; entity in xhtml: %q", c.xhtml)
+		}
 	}
 }

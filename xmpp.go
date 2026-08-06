@@ -304,6 +304,28 @@ func (b *XMPPBridge) SendChatTo(to, text string) string {
 	return lastID
 }
 
+// SendRich converts markdown text to XHTML-IM (XEP-0071) and sends it to `to`
+// as one or more styled messages, each carrying a plain-text <body> fallback
+// so clients without XHTML-IM (or with formatting disabled) still read the
+// content. Returns the stanza ID of the last message sent, or "" if nothing
+// was sent.
+func (b *XMPPBridge) SendRich(to, md string) string {
+	if b.currentSession() == nil {
+		b.log("warning", "send skipped: not online")
+		return ""
+	}
+	var lastID string
+	for _, chunk := range renderRichMessage(md) {
+		id, err := b.encodeXHTMLChat(to, chunk.plain, chunk.xhtml)
+		if err != nil {
+			b.log("error", "send failed: "+err.Error())
+			break
+		}
+		lastID = id
+	}
+	return lastID
+}
+
 // SetPresence announces presence with a show (availability axis: "" = available,
 // "dnd" = busy, …) and a status label (activity axis), remembering both for
 // re-assertion on reconnect. Redundant no-change calls are dropped so streaming
@@ -523,6 +545,41 @@ func (b *XMPPBridge) encodeChat(to, body string, typ stanza.MessageType) (string
 	}{
 		Message: stanza.Message{ID: id, To: toJID, Type: typ},
 		Body:    body,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	b.recordMessage(id, to)
+	return id, session.Encode(ctx, msg)
+}
+
+// xhtmlIMWrapper is the <html xmlns='http://jabber.org/protocol/xhtml-im'>
+// element; Raw carries the pre-escaped XHTML-IM <body> content verbatim.
+type xhtmlIMWrapper struct {
+	Raw string `xml:",innerxml"`
+}
+
+// encodeXHTMLChat sends a 1:1 chat message whose styled body is an XHTML-IM
+// (XEP-0071) <html> wrapper rendering in rich clients like Adium, alongside a
+// plain-text <body> carrying the same content as a fallback. The XHTML must
+// already be escaped and limited to the XEP-0071 integration set.
+func (b *XMPPBridge) encodeXHTMLChat(to, plain, xhtml string) (string, error) {
+	session := b.currentSession()
+	if session == nil {
+		return "", fmt.Errorf("not online")
+	}
+	toJID, err := jid.Parse(to)
+	if err != nil {
+		return "", fmt.Errorf("invalid recipient %q: %w", to, err)
+	}
+	id := newStanzaID()
+	msg := struct {
+		stanza.Message
+		Body string          `xml:"body"`
+		HTML *xhtmlIMWrapper `xml:"http://jabber.org/protocol/xhtml-im html,omitempty"`
+	}{
+		Message: stanza.Message{ID: id, To: toJID, Type: stanza.ChatMessage},
+		Body:    plain,
+		HTML:    &xhtmlIMWrapper{Raw: `<body xmlns="http://www.w3.org/1999/xhtml">` + xhtml + `</body>`},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
