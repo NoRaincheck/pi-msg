@@ -151,10 +151,11 @@ const (
 
 // Server structure encapsulates both IPv4/IPv6 UDP connections
 type Server struct {
-	service  *ServiceEntry
-	ipv4conn *ipv4.PacketConn
-	ipv6conn *ipv6.PacketConn
-	ifaces   []net.Interface
+	service   *ServiceEntry
+	serviceMu sync.RWMutex // guards service against concurrent SetText/Announce/query handling
+	ipv4conn  *ipv4.PacketConn
+	ipv6conn  *ipv6.PacketConn
+	ifaces    []net.Interface
 
 	shouldShutdown chan struct{}
 	shutdownLock   sync.Mutex
@@ -206,8 +207,25 @@ func (s *Server) Shutdown() {
 
 // SetText updates and announces the TXT records
 func (s *Server) SetText(text []string) {
+	s.serviceMu.Lock()
 	s.service.Text = text
 	s.announceText()
+	s.serviceMu.Unlock()
+}
+
+// Announce re-sends the service's full set of records (SRV, TXT, PTR, and
+// address records) with the cache-flush bit set, the same shape as the startup
+// announcements. Callers use this as a keepalive so caches converge on the
+// live registration and any stale copy of the same instance name left by an
+// earlier run is replaced instead of lingering.
+func (s *Server) Announce() {
+	s.serviceMu.RLock()
+	defer s.serviceMu.RUnlock()
+	resp := new(dns.Msg)
+	resp.MsgHdr.Response = true
+	resp.Compress = true
+	s.composeLookupAnswers(resp, s.ttl, 0, true)
+	s.multicastResponse(resp, 0)
 }
 
 // TTL sets the TTL for DNS replies
@@ -384,6 +402,8 @@ func (s *Server) handleQuestion(q dns.Question, resp *dns.Msg, query *dns.Msg, i
 	if s.service == nil {
 		return nil
 	}
+	s.serviceMu.RLock()
+	defer s.serviceMu.RUnlock()
 
 	switch q.Name {
 	case s.service.ServiceTypeName():
@@ -517,6 +537,9 @@ func (s *Server) serviceTypeName(resp *dns.Msg, ttl uint32) {
 // Perform probing & announcement
 // TODO: implement a proper probing & conflict resolution
 func (s *Server) probe() {
+	s.serviceMu.RLock()
+	defer s.serviceMu.RUnlock()
+
 	q := new(dns.Msg)
 	q.SetQuestion(s.service.ServiceInstanceName(), dns.TypePTR)
 	q.RecursionDesired = false
@@ -578,7 +601,8 @@ func (s *Server) probe() {
 	}
 }
 
-// announceText sends a Text announcement with cache flush enabled
+// announceText sends a Text announcement with cache flush enabled. The caller
+// must hold serviceMu (read or write), since it reads the service record.
 func (s *Server) announceText() {
 	resp := new(dns.Msg)
 	resp.MsgHdr.Response = true
@@ -598,6 +622,9 @@ func (s *Server) announceText() {
 }
 
 func (s *Server) unregister() error {
+	s.serviceMu.RLock()
+	defer s.serviceMu.RUnlock()
+
 	resp := new(dns.Msg)
 	resp.MsgHdr.Response = true
 	resp.Answer = []dns.RR{}

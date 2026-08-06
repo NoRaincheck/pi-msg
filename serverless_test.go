@@ -14,6 +14,41 @@ import (
 	"mellium.im/xmpp/stanza"
 )
 
+// TestBonjourTXT verifies the advertised TXT record: required keys always
+// present, and phsh/nick only when configured.
+func TestBonjourTXT(t *testing.T) {
+	base := bonjourTXT(5298, "", "")
+	if got, want := strings.Join(base, " "), "txtvers=1 port=5298 status=avail"; got != want {
+		t.Errorf("base TXT = %q, want %q", got, want)
+	}
+
+	withAvatar := bonjourTXT(5432, "abc123", "")
+	want := map[string]bool{"txtvers=1": true, "port=5432": true, "status=avail": true, "phsh=abc123": true}
+	for _, kv := range withAvatar {
+		delete(want, kv)
+	}
+	if len(want) != 0 {
+		t.Errorf("avatar TXT = %v, missing keys: %v", withAvatar, want)
+	}
+
+	withAlias := bonjourTXT(5298, "", "  Pi  ")
+	if len(withAlias) != 4 {
+		t.Fatalf("alias TXT length = %d, want 4 (%v)", len(withAlias), withAlias)
+	}
+	if withAlias[3] != "nick=Pi" {
+		t.Errorf("alias TXT = %v, want nick=Pi", withAlias)
+	}
+
+	both := bonjourTXT(5298, "abc123", "Pi")
+	found := map[string]bool{}
+	for _, kv := range both {
+		found[kv] = true
+	}
+	if !found["phsh=abc123"] || !found["nick=Pi"] {
+		t.Errorf("full TXT = %v, want both phsh and nick", both)
+	}
+}
+
 // TestServerlessRoundTrip drives a full XEP-0174-style direct stream between a
 // receiver side (our listener, serverlessReceiver) and an initiator side (the
 // owner's client, serverlessInitiator) over a real TCP socket: stream open

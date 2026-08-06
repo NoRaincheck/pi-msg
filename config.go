@@ -53,6 +53,11 @@ type Account struct {
 	// (the "phsh" key). Optional; a missing/invalid file is a logged warning,
 	// not fatal.
 	Avatar string `json:"avatar,omitempty"`
+	// Alias is the display alias advertised as the XEP-0174 "nick" key in the
+	// bot's Bonjour TXT record, shown as the contact's name in Bonjour IM
+	// clients (e.g. Adium). Optional; absent means clients fall back to the
+	// JID.
+	Alias string `json:"alias,omitempty"`
 }
 
 // Config is the on-disk config: an arbitrary number of named accounts.
@@ -75,6 +80,7 @@ type ResolvedAccount struct {
 	Model           string
 	Workdir         string
 	Avatar          string
+	Alias           string
 }
 
 const (
@@ -181,6 +187,7 @@ func resolveAccount(cfg *Config, requested string) (ResolvedAccount, error) {
 		Model:           acct.Model,
 		Workdir:         acct.Workdir,
 		Avatar:          strings.TrimSpace(acct.Avatar),
+		Alias:           strings.TrimSpace(acct.Alias),
 	}, nil
 }
 

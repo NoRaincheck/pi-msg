@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/grandcat/zeroconf"
@@ -21,6 +22,12 @@ const streamNS = "http://etherx.jabber.org/streams"
 
 // serverlessDialTimeout bounds each outbound peer dial + stream handshake.
 const serverlessDialTimeout = 30 * time.Second
+
+// bonjourKeepalive is how often the bot re-announces its Bonjour instance so
+// caches converge on the single live registration: any stale copy of the same
+// name left by an earlier run is cache-flushed away rather than lingering
+// alongside the current one, and address records (120s TTL) stay current.
+const bonjourKeepalive = 60 * time.Second
 
 // writeStreamOpen writes an XML declaration and an opening <stream:stream>
 // element to conn (to=peer, from=us), the framing XEP-0174 direct connections
@@ -180,6 +187,22 @@ type serverlessAdvertised struct {
 	port int
 	own  jid.JID
 	txt  []string // base TXT keys (txtvers, port, phsh) excluding status
+
+	keepaliveStop chan struct{}
+}
+
+// bonjourTXT builds the XEP-0174 TXT record keys for the bot's advertised
+// _presence._tcp instance: the required txtvers/port/status, plus phsh (avatar
+// hash) and nick (display alias) when present.
+func bonjourTXT(port int, avatarHash, alias string) []string {
+	txt := []string{"txtvers=1", "port=" + strconv.Itoa(port), "status=avail"}
+	if avatarHash != "" {
+		txt = append(txt, "phsh="+avatarHash)
+	}
+	if strings.TrimSpace(alias) != "" {
+		txt = append(txt, "nick="+strings.TrimSpace(alias))
+	}
+	return txt
 }
 
 // advertiseAndListen registers the bot's _presence._tcp instance (the JID as
@@ -187,7 +210,7 @@ type serverlessAdvertised struct {
 // serverless connections. It prefers the standard port 5298, falling back to an
 // ephemeral port when that is taken (another IM client may already own it); the
 // actual port is advertised in the TXT record.
-func advertiseAndListen(ctx context.Context, own jid.JID, avatarHash string) (*serverlessAdvertised, error) {
+func advertiseAndListen(ctx context.Context, own jid.JID, avatarHash, alias string) (*serverlessAdvertised, error) {
 	ln, err := net.Listen("tcp", ":"+strconv.Itoa(serverlessPort))
 	if err != nil {
 		ln, err = net.Listen("tcp", ":0")
@@ -197,21 +220,43 @@ func advertiseAndListen(ctx context.Context, own jid.JID, avatarHash string) (*s
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 
-	txt := []string{"txtvers=1", "port=" + strconv.Itoa(port), "status=avail"}
-	if avatarHash != "" {
-		txt = append(txt, "phsh="+avatarHash)
-	}
+	txt := bonjourTXT(port, avatarHash, alias)
 	svc, err := zeroconf.Register(escapeInstance(own.String()), "_presence._tcp", "local", port, txt, nil)
 	if err != nil {
 		ln.Close()
 		return nil, fmt.Errorf("registering Bonjour presence: %w", err)
 	}
 	base := append([]string(nil), txt...)
-	return &serverlessAdvertised{svc: svc, ln: ln, port: port, own: own, txt: base}, nil
+	a := &serverlessAdvertised{svc: svc, ln: ln, port: port, own: own, txt: base}
+	a.startKeepalive()
+	return a, nil
 }
 
-// shutdown unregisters the mDNS presence and closes the listener.
+// startKeepalive re-announces the bot's Bonjour instance every bonjourKeepalive
+// until shutdown, so a fresh process's cache-flush announcements override any
+// stale copy of the same instance name and the registration stays live.
+func (a *serverlessAdvertised) startKeepalive() {
+	a.keepaliveStop = make(chan struct{})
+	go func() {
+		tk := time.NewTicker(bonjourKeepalive)
+		defer tk.Stop()
+		for {
+			select {
+			case <-a.keepaliveStop:
+				return
+			case <-tk.C:
+				a.svc.Announce()
+			}
+		}
+	}()
+}
+
+// shutdown stops the keepalive, unregisters the mDNS presence (sending a
+// DNS-SD goodbye so caches drop the bot), and closes the listener.
 func (a *serverlessAdvertised) shutdown() {
+	if a.keepaliveStop != nil {
+		close(a.keepaliveStop)
+	}
 	a.svc.Shutdown()
 	_ = a.ln.Close()
 }

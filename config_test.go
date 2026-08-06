@@ -42,6 +42,22 @@ func TestResolveAccountDefaults(t *testing.T) {
 	if got.Avatar != "" {
 		t.Errorf("Avatar = %q, want empty", got.Avatar)
 	}
+	if got.Alias != "" {
+		t.Errorf("Alias = %q, want empty", got.Alias)
+	}
+}
+
+func TestResolveAccountAlias(t *testing.T) {
+	cfg := &Config{Accounts: map[string]Account{
+		"default": {JID: "pi@mymac.local", Owner: "zach@mymac.local", Alias: "  Pi Agent  "},
+	}}
+	got, err := resolveAccount(cfg, "")
+	if err != nil {
+		t.Fatalf("resolveAccount: %v", err)
+	}
+	if got.Alias != "Pi Agent" {
+		t.Errorf("Alias = %q, want %q (trimmed)", got.Alias, "Pi Agent")
+	}
 }
 
 func TestResolveAccountBonjourOptions(t *testing.T) {

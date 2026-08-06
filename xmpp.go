@@ -168,7 +168,7 @@ func (b *XMPPBridge) log(level, msg string) {
 // after each successful outbound connect, once presence has been announced.
 func (b *XMPPBridge) Run(ctx context.Context, onConnected func()) {
 	if own, err := jid.Parse(b.acct.JID); err == nil {
-		if adv, err := advertiseAndListen(ctx, own, b.avatarHash); err == nil {
+		if adv, err := advertiseAndListen(ctx, own, b.avatarHash, b.acct.Alias); err == nil {
 			b.mu.Lock()
 			b.adv = adv
 			b.mu.Unlock()

@@ -73,6 +73,7 @@ Create `~/.config/pi-msg/config.json` (override the path with `PI_MSG_CONFIG`), 
     "default": {
       "jid": "pi@mbpro.local",
       "owner": "you@mbpro.local",
+      "alias": "Pi",
       "model": "anthropic/claude-sonnet-latest",
       "workdir": "/path/to/your/project"
     }
@@ -93,6 +94,7 @@ Per-account fields:
 | `workdir` | no | current dir | working directory for the agent (also where Pi discovers `AGENTS.md`/`CLAUDE.md`) |
 | `reactions` | no | `false` | XEP-0444 emoji reactions on owner messages: lifecycle → 👀 picked up / ✅ done / ⛔ aborted, and enables the agent-driven `send_reaction` tool (see [Agent tools](#agent-tools)) |
 | `avatar` | no | — | path to a local image (PNG/JPEG/GIF) whose SHA-1 hash is advertised as the bot's XEP-0153 photo hash (`phsh` key) in the Bonjour TXT record |
+| `alias` | no | — | display alias advertised as the XEP-0174 `nick` key in the Bonjour TXT record; shown as the contact's name in Adium and other Bonjour IM clients |
 
 Old server-only keys (`room`, `resource`, `nick`, `roomTrigger`, `uploadService`,
 `pingInterval`, …) are silently ignored, so pre-existing configs keep loading.
