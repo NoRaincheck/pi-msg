@@ -226,8 +226,46 @@ func balancedTags(s string) bool {
 	return open == 0
 }
 
-func TestRenderRichMessageChunks(t *testing.T) {
-	// Enough paragraphs to force multiple chunks.
+func TestRenderRichMessagePerLine(t *testing.T) {
+	// Every non-blank line in the markdown produces a separate chunk.
+	md := "hello world\n\n**bold** line\n`code` line"
+	chunks := renderRichMessage(md)
+	// "hello world" + "bold line" + "code line" = 3 chunks (blank skipped)
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks, got %d", len(chunks))
+	}
+	if chunks[0].plain != "hello world" {
+		t.Errorf("chunk 0 plain = %q, want 'hello world'", chunks[0].plain)
+	}
+	if !strings.Contains(chunks[1].xhtml, "<strong>bold</strong>") {
+		t.Errorf("chunk 1 xhtml missing strong: %q", chunks[1].xhtml)
+	}
+	if !strings.Contains(chunks[2].xhtml, "monospace") {
+		t.Errorf("chunk 2 xhtml missing monospace: %q", chunks[2].xhtml)
+	}
+}
+
+func TestRenderRichMessageCodeLines(t *testing.T) {
+	// Each line of a code block becomes its own message; fence markers are skipped.
+	md := "```\nfunc main() {\n    fmt.Println(\"hi\")\n}\n```"
+	chunks := renderRichMessage(md)
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks for 3 code lines, got %d", len(chunks))
+	}
+	// Plain fallbacks preserve the raw code.
+	if chunks[0].plain != "func main() {" {
+		t.Errorf("chunk 0 plain = %q, want 'func main() {'", chunks[0].plain)
+	}
+	// XHTML has monospace styling.
+	for i, c := range chunks {
+		if !strings.Contains(c.xhtml, "font-family:monospace") {
+			t.Errorf("chunk %d xhtml missing monospace: %q", i, c.xhtml)
+		}
+	}
+}
+
+func TestRenderRichMessageLongText(t *testing.T) {
+	// Enough paragraphs to produce many chunks (one per line).
 	para := "The quick brown fox jumps over the lazy dog and keeps on going."
 	var md strings.Builder
 	for i := 0; i < 300; i++ {
@@ -248,13 +286,10 @@ func TestRenderRichMessageChunks(t *testing.T) {
 		if strings.Contains(c.xhtml, "<html") || strings.Contains(c.xhtml, "<body") {
 			t.Errorf("chunk %d must not contain wrapper elements:\n%s", i, c.xhtml)
 		}
-		if strings.TrimSpace(c.plain) == "" {
-			t.Errorf("chunk %d has empty plain fallback", i)
-		}
 	}
 }
 
-func TestRenderRichMessageShortSingleChunk(t *testing.T) {
+func TestRenderRichMessageShortSingleLine(t *testing.T) {
 	chunks := renderRichMessage("**hi** there")
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
@@ -264,5 +299,70 @@ func TestRenderRichMessageShortSingleChunk(t *testing.T) {
 	}
 	if !strings.Contains(chunks[0].xhtml, "<strong>hi</strong>") {
 		t.Errorf("xhtml = %q, want strong", chunks[0].xhtml)
+	}
+}
+
+func TestRenderRichMessageSkipsBlankLines(t *testing.T) {
+	// Blank lines between content should not produce empty messages.
+	md := "line one\n\nline two"
+	chunks := renderRichMessage(md)
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks (blank line skipped), got %d", len(chunks))
+	}
+	if chunks[0].plain != "line one" {
+		t.Errorf("chunk 0 plain = %q, want 'line one'", chunks[0].plain)
+	}
+	if chunks[1].plain != "line two" {
+		t.Errorf("chunk 1 plain = %q, want 'line two'", chunks[1].plain)
+	}
+}
+
+func TestRenderRichMessageMultiLinePreservesFormatting(t *testing.T) {
+	// Multiple lines with inline formatting each get their own chunk.
+	md := "**bold** text\n*italic* text\n`code` here"
+	chunks := renderRichMessage(md)
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks, got %d", len(chunks))
+	}
+	if !strings.Contains(chunks[0].xhtml, "<strong>bold</strong>") {
+		t.Errorf("chunk 0 xhtml missing bold: %q", chunks[0].xhtml)
+	}
+	if !strings.Contains(chunks[1].xhtml, "<em>italic</em>") {
+		t.Errorf("chunk 1 xhtml missing italic: %q", chunks[1].xhtml)
+	}
+	if !strings.Contains(chunks[2].xhtml, "font-family:monospace") {
+		t.Errorf("chunk 2 xhtml missing monospace: %q", chunks[2].xhtml)
+	}
+	// Plain fallbacks should strip formatting.
+	if chunks[0].plain != "bold text" {
+		t.Errorf("plain = %q, want 'bold text'", chunks[0].plain)
+	}
+}
+
+func TestRenderRichMessageMixedBlocks(t *testing.T) {
+	// Headings, paragraphs, code blocks, lists — each newline → one chunk.
+	// Blank lines and fence markers are skipped.
+	md := "# Heading\n\nParagraph line\n\n```\ncode line 1\ncode line 2\n```\n\n- list item"
+	chunks := renderRichMessage(md)
+	// heading + para + 2 code lines + list = 5 chunks
+	if len(chunks) != 5 {
+		t.Fatalf("expected 5 chunks, got %d", len(chunks))
+	}
+	// Heading should have bold style.
+	if !strings.Contains(chunks[0].xhtml, "font-weight:bold") {
+		t.Errorf("heading chunk missing bold style: %q", chunks[0].xhtml)
+	}
+	// Code lines should have monospace.
+	for i := 2; i <= 3; i++ {
+		if !strings.Contains(chunks[i].xhtml, "font-family:monospace") {
+			t.Errorf("code chunk %d missing monospace: %q", i, chunks[i].xhtml)
+		}
+	}
+	// Plain fallbacks strip formatting.
+	if chunks[0].plain != "Heading" {
+		t.Errorf("heading plain = %q, want 'Heading'", chunks[0].plain)
+	}
+	if chunks[1].plain != "Paragraph line" {
+		t.Errorf("para plain = %q, want 'Paragraph line'", chunks[1].plain)
 	}
 }

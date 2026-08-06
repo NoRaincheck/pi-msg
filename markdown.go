@@ -799,35 +799,85 @@ type richChunk struct {
 	xhtml string
 }
 
-// renderRichMessage converts markdown text into chunks, each small enough to
-// fit in a single message stanza and complete at block boundaries.
+// renderRichMessage converts markdown text into chunks. Every newline in the
+// markdown becomes its own XHTML-IM message so that each line is a standalone
+// message stanza with a plain-text <body> fallback.
+//
+// Code blocks are handled specially: the fence markers are not emitted as
+// messages — only the code content lines are sent, each in monospace.
 func renderRichMessage(text string) []richChunk {
-	blocks := parseMD(text)
+	lines := strings.Split(text, "\n")
 	var chunks []richChunk
-	var plain, xhtml strings.Builder
-	flush := func() {
-		if xhtml.Len() == 0 {
-			return
+	inCode := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Toggle code-fence state; fence markers themselves are not sent.
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inCode = !inCode
+			continue
 		}
+		// Skip blank lines.
+		if trimmed == "" {
+			continue
+		}
+		if inCode {
+			// Code block line: monospace with NBSP-preserved indentation.
+			chunks = append(chunks, richChunk{
+				plain: line,
+				xhtml: `<p style="font-family:monospace">` + codeLineHTML(line) + `</p>`,
+			})
+			continue
+		}
+		// Detect block-level syntax at the line level.
+		if isHeadingLine(trimmed) {
+			chunks = append(chunks, headingAsChunk(trimmed))
+			continue
+		}
+		// Regular line: inline formatting stripped for plain fallback,
+		// converted to XHTML for rich fallback.
+		var plainBuf strings.Builder
+		renderInline(trimmed, &plainBuf, true)
 		chunks = append(chunks, richChunk{
-			plain: strings.TrimSpace(plain.String()),
-			xhtml: xhtml.String(),
+			plain: plainBuf.String(),
+			xhtml: `<p>` + lineToXHTML(trimmed, false) + `</p>`,
 		})
-		plain.Reset()
-		xhtml.Reset()
 	}
-	for _, b := range blocks {
-		bp := b.plain()
-		bx := b.xhtml()
-		if xhtml.Len() > 0 && xhtml.Len()+len(bx) > maxXHTMLIM {
-			flush()
-		}
-		if plain.Len() > 0 {
-			plain.WriteByte('\n')
-		}
-		plain.WriteString(bp)
-		xhtml.WriteString(bx)
-	}
-	flush()
 	return chunks
+}
+
+// isHeadingLine reports whether a trimmed line starts with a heading marker (#).
+func isHeadingLine(s string) bool {
+	i := 0
+	for i < len(s) && s[i] == '#' {
+		i++
+	}
+	return i > 0 && i < len(s) && (s[i] == ' ' || s[i] == '\t')
+}
+
+// headingAsChunk converts a heading line to a richChunk with bold styling.
+func headingAsChunk(line string) richChunk {
+	// Strip the # markers and leading space.
+	text := strings.TrimLeft(line, " ")
+	text = strings.TrimLeft(text, "#")
+	text = strings.TrimSpace(text)
+	var plainBuf strings.Builder
+	renderInline(text, &plainBuf, true)
+	return richChunk{
+		plain: plainBuf.String(),
+		xhtml: `<p style="font-weight:bold">` + lineToXHTML(text, false) + `</p>`,
+	}
+}
+
+// lineToXHTML converts a single markdown line to XHTML-IM markup.
+// codeFence is true when the line is inside a fenced code block (```
+// delimiter); such lines are rendered in monospace with NBSP-preserved
+// leading indentation.
+func lineToXHTML(s string, codeFence bool) string {
+	if codeFence {
+		return codeLineHTML(s)
+	}
+	var b strings.Builder
+	renderInline(s, &b, false)
+	return b.String()
 }
